@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# credenciales y certificados de dispositivos — NUNCA commitear
+certs/
+*.pem
+*.key
+.env
+.env.*

@@ -1,0 +1,75 @@
+:root {
+  color-scheme: dark;
+  --bg: #0e1420;
+  --panel: #171f2e;
+  --border: #263349;
+  --text: #dbe4f0;
+  --muted: #8195ad;
+  --ok: #34c98e;
+  --excursion: #f0596b;
+  --stale: #8195ad;
+  --accent: #5aa9f5;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.app { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+
+.topbar { display: flex; align-items: baseline; gap: 12px; }
+.topbar h1 { font-size: 22px; letter-spacing: 0.02em; margin: 0 0 16px; }
+
+h2 { font-size: 16px; color: var(--muted); margin: 32px 0 12px; }
+
+.units {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.unit-card {
+  display: block; width: 100%; text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  color: inherit; font: inherit;
+  cursor: pointer;
+}
+.unit-card.selected { border-color: var(--accent); }
+.unit-card header { display: flex; justify-content: space-between; align-items: center; }
+.unit-id { font-weight: 600; }
+.unit-card .temp { font-size: 32px; font-weight: 700; margin: 6px 0 2px; }
+.status-excursion .temp { color: var(--excursion); }
+.status-stale .temp { color: var(--stale); }
+.meta { display: flex; gap: 12px; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+.description { color: var(--muted); font-size: 12px; margin-top: 8px; }
+
+.badge {
+  font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid currentColor;
+}
+.badge-ok { color: var(--ok); }
+.badge-excursion { color: var(--excursion); }
+.badge-stale { color: var(--stale); }
+
+.sparkline-band { fill: rgba(90, 169, 245, 0.12); }
+.sparkline-line { stroke: var(--accent); stroke-width: 1.5; }
+.sparkline-empty { color: var(--muted); font-size: 12px; height: 60px; display: flex; align-items: center; }
+
+.detail { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-top: 24px; overflow-x: auto; }
+
+table.alerts { width: 100%; border-collapse: collapse; }
+table.alerts th, table.alerts td {
+  text-align: left; padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+table.alerts th { color: var(--muted); font-weight: 500; font-size: 12px; }
+
+.empty { color: var(--muted); }

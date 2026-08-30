@@ -1,0 +1,25 @@
+{
+  "name": "tp-cloud",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Snowball — plataforma de monitoreo de cadena de frío (ITBA Cloud, Entrega 2)",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @snowball/shared && npm run build -w @snowball/alert-processor && npm run build -w @snowball/simulator && npm run build -w @snowball/api && npm run build -w @snowball/dashboard",
+    "test": "npm run test --workspaces --if-present",
+    "simulator": "npm run dev -w @snowball/simulator --",
+    "alert-processor": "npm run dev -w @snowball/alert-processor",
+    "api": "npm run dev -w @snowball/api",
+    "dashboard": "npm run dev -w @snowball/dashboard --",
+    "bundle": "npm run build -w @snowball/shared && npm run bundle -w @snowball/alert-processor && npm run bundle -w @snowball/api"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8",
+    "esbuild": "^0.24.0"
+  }
+}
