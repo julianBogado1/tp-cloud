@@ -88,9 +88,22 @@ mail que llega** (sin confirmar no se entrega nada).
 
 ### 4.1 Endpoint
 
-**IoT Core → Settings** (menú izquierdo, abajo) → copiar el
-**Device data endpoint** (algo como `xxxxxxxx-ats.iot.us-east-1.amazonaws.com`).
-Es el `--endpoint` del simulador.
+Es el `--endpoint` del simulador, con la forma
+`xxxxxxxxxxxxxx-ats.iot.us-east-1.amazonaws.com`. Tiene que ser la variante
+**`-ats`** (Amazon Trust Services): es la que valida contra el
+`AmazonRootCA1.pem` que carga el simulador.
+
+La consola ya **no** lo muestra en *Settings*. Cualquiera de estos tres da el
+mismo valor:
+
+- **CloudShell** (botón abajo a la izquierda):
+  ```bash
+  aws iot describe-endpoint --endpoint-type iot:Data-ATS
+  ```
+- **Connect → Domain configurations** → entrada `iot:Data-ATS` (existe por
+  defecto) → campo **Domain name**.
+- **Connect → Connect one device** → el asistente lo muestra en el primer
+  paso (leerlo y salir, no hace falta completarlo).
 
 ### 4.2 Política de dispositivos (una sola para todos)
 
