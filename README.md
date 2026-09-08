@@ -13,7 +13,7 @@ simulator (local) ──MQTT/TLS──▶ IoT Core ──regla──▶ DynamoDB
                                                                     │
                                                               RDS (umbrales, alertas)
 LECTURA (humanos)
-dashboard (estático, S3) ──HTTP/WS──▶ api (EC2) ──▶ DynamoDB + RDS
+dashboard (estático, S3) ──HTTP+JWT/WS──▶ api (EC2) ──▶ DynamoDB + RDS + Device Shadow
 ```
 
 Las dos rutas no se tocan: la cola es exclusiva del `alert-processor`; la
@@ -28,7 +28,7 @@ dashboards conectados están mirando.
 | `packages/shared` | Tipos del dominio + nombres de recursos (única fuente de verdad; se _bundlea_ dentro de cada artefacto) | — |
 | `packages/simulator` | Unidades de frío simuladas: cliente MQTT con certificado X.509, escenarios de excursión/silencio, Device Shadow | **local** |
 | `packages/alert-processor` | Consumidor de SQS: máquina de estados de excursión, umbrales desde RDS, alertas a SNS + RDS. Stateless (estado en DynamoDB) | EC2, artefacto de un solo archivo |
-| `packages/api` | REST + WebSocket para el dashboard: unidades/alertas desde RDS, telemetría desde DynamoDB, feed en vivo por polling acotado. Stateless | EC2, artefacto de un solo archivo |
+| `packages/api` | REST + WebSocket para el dashboard: login con JWT propio (`/auth`), roles operador/supervisor/admin con alcance por cliente, lectura de unidades/alertas/telemetría, acknowledgement de alertas, configuración remota vía Device Shadow y ABM de usuarios. Stateless | EC2, artefacto de un solo archivo |
 | `packages/dashboard` | Frontend React (Vite): tarjetas por unidad con feed en vivo, historial y alertas. Compila a archivos 100 % estáticos | S3 static website |
 | `infra/sql/` | `schema.sql` y `seed.sql` de la base de dominio (RDS PostgreSQL) | — |
 | `docs/infra-aws-consola.md` | **Guía paso a paso** para crear toda la infraestructura desde la consola AWS y desplegar cada módulo | — |
@@ -47,12 +47,29 @@ npm run simulator -- --endpoint <xxx-ats.iot.us-east-1.amazonaws.com> \
 # procesador de alertas (necesita SQS_QUEUE_URL, SNS_THERMAL_EXCURSION_TOPIC_ARN y PG*)
 npm run alert-processor
 
-# API (necesita PG*; opcionales PORT, LIVE_POLL_MS, DDB_TABLE)
+# API (necesita JWT_SECRET y PG*; opcionales IOT_ENDPOINT, CORS_ORIGIN, PORT, LIVE_POLL_MS, DDB_TABLE — ver packages/api/.env.example)
 npm run api
 
 # dashboard en modo dev (VITE_API_BASE en packages/dashboard/.env, ver .env.example)
 npm run dashboard
 ```
+
+## Autenticación
+
+- **Máquinas**: cada unidad es un *thing* de IoT Core con certificado X.509 propio
+  (mTLS) y la política `snowball-device-policy`, que con `${iot:Connection.Thing.ThingName}`
+  la limita a sus tópicos. Alta por consola (guía §4.3) o con
+  `scripts/provision-unit.sh SB-004`.
+- **Personas**: `POST /auth/login` con email + contraseña (bcrypt en RDS) devuelve un JWT
+  HS256 de 8 h. Roles `operator < supervisor < admin`; los no-admin solo ven las unidades
+  de su `client_id`. Usuarios demo en `infra/sql/seed.sql`
+  (`operator123` / `supervisor123` / `admin123`); nuevo hash con
+  `npx tsx scripts/hash-password.ts <pass>`.
+- El JWT no es revocable: desactivar un usuario desde el panel de administración no lo
+  desloguea, sigue con acceso completo hasta que el token expire (hasta 8 h). Además, el
+  feed en vivo (`/live`) fija el conjunto de unidades permitidas al conectar el WebSocket,
+  así que mover una unidad de cliente o desactivar al usuario no corta una conexión ya
+  abierta hasta que se cierre.
 
 ## Despliegue
 
@@ -70,6 +87,5 @@ end-to-end están en `docs/infra-aws-consola.md`.
 
 ## Pendiente (fases siguientes)
 
-- JWT en la API + acknowledgement de alertas (escrituras humanas a RDS)
 - ALB delante de la API y VPC de tres capas según el PDF (§7)
 - Alarma CloudWatch de «sin señal» y alertas de batería baja (`snowball-low-battery`)

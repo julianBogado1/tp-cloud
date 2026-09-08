@@ -1,14 +1,48 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { IngestedReading } from '@snowball/shared';
-import { connectLive, fetchAlerts, fetchTelemetry, fetchUnits, type AlertRow, type UnitWithReading } from './api';
+import type { IngestedReading, ThresholdConfig } from '@snowball/shared';
+import { ackAlert, connectLive, fetchAlerts, fetchTelemetry, fetchUnits, setUnauthorizedHandler, type AlertRow, type UnitWithReading } from './api';
+import { canAck, canConfig, clearSession, getSession, isAdmin, setSession, type Session } from './auth';
 import { AlertsTable } from './AlertsTable';
+import { ConfigPanel } from './ConfigPanel';
+import { Login } from './Login';
 import { Sparkline } from './Sparkline';
 import { UnitCard } from './UnitCard';
+import { UsersPanel } from './UsersPanel';
 
 const HISTORY_POINTS = 60;
 const ALERTS_REFRESH_MS = 30_000;
 
+/** Session gate: no valid token → login page; otherwise the dashboard. */
 export function App() {
+  const [session, setSessionState] = useState<Session | null>(() => getSession());
+
+  useEffect(() => {
+    // A 401 from any call (or a 4401 WebSocket close) lands here.
+    setUnauthorizedHandler(() => setSessionState(null));
+  }, []);
+
+  if (!session) {
+    return (
+      <Login
+        onLogin={(s) => {
+          setSession(s);
+          setSessionState(s);
+        }}
+      />
+    );
+  }
+  return (
+    <Dashboard
+      session={session}
+      onLogout={() => {
+        clearSession();
+        setSessionState(null);
+      }}
+    />
+  );
+}
+
+function Dashboard({ session, onLogout }: { session: Session; onLogout: () => void }) {
   const [units, setUnits] = useState<UnitWithReading[] | null>(null);
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
   const [history, setHistory] = useState<Record<string, IngestedReading[]>>({});
@@ -41,8 +75,8 @@ export function App() {
 
   useEffect(() => {
     if (!units || units.length === 0) return;
-    return connectLive(units.map((u) => u.unit_id), onReading, setConnected);
-  }, [units, onReading]);
+    return connectLive(units.map((u) => u.unit_id), session.token, onReading, setConnected);
+  }, [units, onReading, session.token]);
 
   useEffect(() => {
     if (!selected) return;
@@ -52,6 +86,21 @@ export function App() {
       () => undefined,
     );
   }, [selected]);
+
+  const onAck = useCallback(async (id: number) => {
+    const updated = await ackAlert(id);
+    setAlerts((prev) => prev.map((a) => (a.id === id ? updated : a)));
+  }, []);
+
+  const onConfigSaved = useCallback((config: ThresholdConfig) => {
+    setUnits((prev) =>
+      prev?.map((u) =>
+        u.unit_id === config.unit_id
+          ? { ...u, setpoint_c: config.setpoint_c, temp_min_c: config.temp_min_c, temp_max_c: config.temp_max_c }
+          : u,
+      ) ?? prev,
+    );
+  }, []);
 
   const selectedUnit = useMemo(
     () => units?.find((u) => u.unit_id === selected) ?? null,
@@ -68,6 +117,9 @@ export function App() {
         <span className={`badge ${connected ? 'badge-ok' : 'badge-stale'}`}>
           {connected ? 'feed en vivo' : 'reconectando…'}
         </span>
+        <span className="spacer" />
+        <span className="muted">{session.user.email} · {session.user.role}</span>
+        <button className="link" onClick={onLogout}>Salir</button>
       </header>
 
       <section className="units">
@@ -98,13 +150,16 @@ export function App() {
           ) : (
             <p className="empty">Sin historial suficiente en DynamoDB.</p>
           )}
+          <ConfigPanel unit={selectedUnit} editable={canConfig(session.user.role)} onSaved={onConfigSaved} />
         </section>
       )}
 
       <section>
         <h2>Alertas</h2>
-        <AlertsTable alerts={alerts} />
+        <AlertsTable alerts={alerts} canAck={canAck(session.user.role)} onAck={onAck} />
       </section>
+
+      {isAdmin(session.user.role) && <UsersPanel selfId={session.user.id} />}
     </main>
   );
 }
