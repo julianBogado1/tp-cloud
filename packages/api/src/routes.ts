@@ -18,13 +18,8 @@ export function createRouter(data: DataAccess): Router {
     const scope = scopeOf(getAuth(res));
     try {
       const units = await data.listUnits(scope);
-      const withReadings = await Promise.all(
-        units.map(async (unit) => ({
-          ...unit,
-          last_reading: (await data.latestReading(unit.unit_id)) ?? null,
-        })),
-      );
-      res.json(withReadings);
+      const latest = await data.latestReadings(units.map((unit) => unit.unit_id));
+      res.json(units.map((unit) => ({ ...unit, last_reading: latest.get(unit.unit_id) ?? null })));
     } catch (err) {
       console.error('GET /units failed:', err);
       res.status(500).json({ error: 'internal error' });

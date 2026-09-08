@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { createServer, type Server } from 'http';
 import express from 'express';
 import { signToken } from '../src/auth/jwt';
@@ -13,11 +13,12 @@ const supervisor1Token = signToken({ id: 2, email: 'sup@x', role: 'supervisor', 
 
 let server: Server;
 let base: string;
+const latestReadings = vi.fn(fakeData.latestReadings);
 
 beforeAll(async () => {
   const app = express();
   app.use('/api', authenticate(secret));
-  app.use('/api', createRouter(fakeData));
+  app.use('/api', createRouter({ ...fakeData, latestReadings }));
   app.use('/api', notFound());
   server = createServer(app);
   await new Promise<void>((resolve) => server.listen(0, resolve));
@@ -39,12 +40,15 @@ describe('REST read routes', () => {
   });
 
   test('GET /units for admin returns every unit with config and latest reading', async () => {
+    latestReadings.mockClear();
     const res = await get('/units');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual([
       { ...strip(units[0]), last_reading: telemetry[0] },
       { ...strip(units[1]), last_reading: null },
     ]);
+    expect(latestReadings).toHaveBeenCalledTimes(1);
+    expect(latestReadings).toHaveBeenCalledWith(['SB-001', 'SB-003']);
   });
 
   test('GET /units for an operator is limited to their client', async () => {

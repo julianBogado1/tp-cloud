@@ -31,6 +31,7 @@ group* del balanceador.
 | Bastión | `snowball-bastion` |
 | RDS | `snowball-db` · DB subnet group `snowball-db-subnets` · base `snowball` |
 | Tabla DynamoDB | `snowball-telemetry` |
+| Tabla DynamoDB de estado | `snowball-unit-state` |
 | Cola SQS principal | `snowball-readings` |
 | Cola SQS DLQ | `snowball-readings-dlq` |
 | Tópicos SNS | `snowball-thermal-excursion`, `snowball-low-battery`, `snowball-no-signal` |
@@ -248,7 +249,9 @@ agrega superficie de error de configuración sin ganancia real.
 
 ---
 
-## 3. DynamoDB — tabla de telemetría
+## 3. DynamoDB — tablas de telemetría
+
+### 3.1 Histórico: `snowball-telemetry`
 
 Consola → **DynamoDB → Tables → Create table**:
 
@@ -260,7 +263,21 @@ Consola → **DynamoDB → Tables → Create table**:
 
 Después, con la tabla creada → pestaña **Additional settings** →
 **Time to Live (TTL)** → *Turn on* → TTL attribute: `expires_at`.
-(El simulador manda `expires_at` = epoch en segundos a 30 días; DynamoDB borra solo.)
+(`expires_at` lo calcula la **regla de IoT Core** — §6.4 — como epoch en
+segundos a 30 días de la ingesta; el dispositivo no lo manda. DynamoDB borra solo.)
+
+### 3.2 Estado actual: `snowball-unit-state`
+
+Una fila por unidad con su **última lectura**, sobrescrita por cada mensaje.
+La API usa esta tabla para `GET /api/units` y para el primer envío del feed
+en vivo, sin recorrer el histórico.
+
+1. **Create table** → Table name: `snowball-unit-state`
+2. Partition key: `unit_id` — tipo **String**. **Sin sort key.**
+3. Capacity mode: **On-demand** → Create table.
+
+> **No activar TTL en esta tabla**: una unidad que dejó de reportar debe seguir
+> mostrando su última lectura para poder detectar «sin señal».
 
 ---
 
@@ -397,16 +414,23 @@ certs/
 2. SQL statement (versión 2016-03-23):
 
 ```sql
-SELECT *, topic(2) AS unit_id FROM 'snowball/+/telemetry'
+SELECT *, topic(2) AS unit_id, floor(timestamp() / 1000) + 2592000 AS expires_at
+FROM 'snowball/+/telemetry'
 ```
 
-3. **Action 1 — DynamoDBv2**: *Split message into multiple columns of a DynamoDB table* →
+`topic(2)` obtiene la unidad del tópico; `timestamp()` es el instante de
+ingesta en milisegundos, así que `expires_at` queda en epoch-segundos a 30 días.
+El TTL lo decide el servidor, no el dispositivo.
+
+3. **Action 1 — DynamoDBv2**: *Insert a message into a DynamoDB table* →
    Table: `snowball-telemetry` → IAM role: **LabRole**.
-4. **Add action** → **Action 2 — SQS**: Queue: `snowball-readings` →
+4. **Add action** → **Action 2 — DynamoDBv2**: Table: `snowball-unit-state` →
+   IAM role: **LabRole**. (Misma clave `unit_id`: cada lectura pisa la anterior.)
+5. **Add action** → **Action 3 — SQS**: Queue: `snowball-readings` →
    *Use the message as-is* (sin base64) → IAM role: **LabRole**.
-5. **Error action** (abajo): *Send message data to CloudWatch logs* →
+6. **Error action** (abajo): *Send message data to CloudWatch logs* →
    Log group: crear `snowball-iot-errors` → IAM role: **LabRole**.
-6. Create rule.
+7. Create rule.
 
 > Si al elegir LabRole la consola se queja de permisos, reintentar una vez —
 > pasa lo mismo que documenta el propio lab con los service-linked roles.
@@ -418,10 +442,14 @@ SELECT *, topic(2) AS unit_id FROM 'snowball/+/telemetry'
 1. Pestaña **Publish to a topic** → topic `snowball/SB-001/telemetry` → payload:
 
 ```json
-{"unit_id":"SB-001","ts":"2026-08-30T12:00:00.000Z","temp_c":-17.5,"humidity_pct":60,"lat":-34.6,"lon":-58.4,"battery":90,"signal":4,"expires_at":1790000000}
+{"unit_id":"SB-001","ts":"2026-08-30T12:00:00.000Z","temp_c":-17.5,"humidity_pct":60,"lat":-34.6,"lon":-58.4,"battery":90,"signal":4}
 ```
 
-2. **DynamoDB → Explore items → snowball-telemetry**: debe aparecer el ítem.
+2. **DynamoDB → Explore items → snowball-telemetry**: debe aparecer el ítem
+   **con un `expires_at`** que el payload no traía. En
+   **snowball-unit-state** debe quedar una única fila `SB-001` con la misma
+   lectura; publicar otra vez con otro `ts` deja dos ítems históricos y uno solo
+   (el nuevo) en estado actual.
 3. **SQS → snowball-readings → Send and receive messages → Poll for messages**:
    debe aparecer el mensaje (después de mirarlo, no borrarlo o borralo, da igual:
    es de prueba).
@@ -480,8 +508,8 @@ Activar **Bucket Versioning** para poder volver a un bundle anterior.
 - **Respaldos.** Volcados lógicos de RDS.
 
 Agregarle una regla de ciclo de vida: **Management → Create lifecycle rule** →
-prefijo `telemetry/` → *Transition current versions* → **Glacier Flexible
-Retrieval a los 90 días**.
+nombre `telemetry-to-glacier` → prefijo `telemetry/` → *Transition current
+versions* → **Glacier Flexible Retrieval a los 30 días**.
 
 ---
 
@@ -585,13 +613,52 @@ un túnel SSH y correr `psql` contra `localhost`, así las credenciales no queda
 en el bastión:
 
 ```bash
-# terminal 1 — túnel (endpoint en la pestaña Connectivity de la instancia)
-ssh -i labsuser.pem -L 5432:<ENDPOINT-RDS>:5432 ec2-user@<IP-BASTION>
+# terminal 1 — túnel a una instancia de app, pasando por el bastión
+# (hacerlo después de crear el ASG; usar la IP privada de una instancia sana)
+ssh -i labsuser.pem -J ec2-user@<IP-BASTION> \
+   -L 5432:<ENDPOINT-RDS>:5432 ec2-user@<IP-PRIVADA-INSTANCIA-APP>
 
 # terminal 2 — el mismo comando de siempre, contra el túnel
 psql "host=localhost dbname=snowball user=snowball sslmode=require" \
   -f infra/sql/schema.sql -f infra/sql/seed.sql
 ```
+
+### 9.4 Autenticación de personas
+
+La API no tiene registro público. Las cuentas iniciales se crean con
+`infra/sql/seed.sql`; después un administrador puede crear usuarios desde el
+ABM protegido de `/api/users`. Las credenciales demo son:
+
+| Rol | Email | Contraseña |
+|---|---|---|
+| operador | `operator@snowball.example` | `operator123` |
+| supervisor | `supervisor@snowball.example` | `supervisor123` |
+| admin | `admin@snowball.example` | `admin123` |
+
+Cambiar estas contraseñas antes de una entrega real. Para el API, generar una
+clave de firma propia y guardarla solo en el entorno del servidor:
+
+```bash
+openssl rand -base64 32
+```
+
+La variable `JWT_SECRET` debe estar presente en cada instancia de la API y ser
+la misma en todas ellas. No se guarda en Git, S3 público, el dashboard ni el
+navegador. El JWT que recibe el navegador expira a las 8 horas; la clave no.
+
+Probar el flujo desde el endpoint del ALB:
+
+```bash
+curl -i -X POST http://<DNS-DEL-ALB>/auth/login \
+   -H 'Content-Type: application/json' \
+   -d '{"email":"admin@snowball.example","password":"admin123"}'
+
+curl -i http://<DNS-DEL-ALB>/auth/me \
+   -H 'Authorization: Bearer <JWT>'
+```
+
+Sin token la API responde `401`; un rol insuficiente responde `403`, y una
+unidad fuera del tenant responde `404` para no revelar su existencia.
 
 Usuarios demo que crea el seed (cambiar las contraseñas fuera de la demo):
 
@@ -648,6 +715,7 @@ npm run bundle
 # genera:
 #   packages/alert-processor/dist/alert-processor.bundle.js
 #   packages/api/dist/api.bundle.js
+#   packages/telemetry-export/dist/telemetry-export.zip
 ```
 
 Subir los bundles al bucket de artefactos: de ahí los baja el *user data* de
@@ -659,6 +727,14 @@ aws s3 cp packages/alert-processor/dist/alert-processor.bundle.js \
 aws s3 cp packages/api/dist/api.bundle.js \
   s3://snowball-artifacts-<sufijo>/
 ```
+
+La Lambda se empaqueta aparte porque AWS Lambda recibe un `.zip`:
+
+```bash
+npm run bundle
+```
+
+El archivo queda en `packages/telemetry-export/dist/telemetry-export.zip`.
 
 ---
 
@@ -745,6 +821,7 @@ PGHOST=<ENDPOINT-RDS>
 PGDATABASE=snowball
 PGUSER=snowball
 PGPASSWORD=<pass>
+JWT_SECRET=<clave generada para esta instalación>
 PORT=3000
 ENV
 chmod 600 /etc/snowball.env
@@ -832,6 +909,28 @@ curl http://<DNS-DEL-ALB>/health      # {"ok":true}
 curl http://<DNS-DEL-ALB>/api/units
 ```
 
+### 13.5 Lambda diaria de archivo
+
+**Lambda → Create function** → *Author from scratch*:
+
+1. Name: `snowball-telemetry-export` · Runtime **Node.js 20.x** ·
+   Architecture x86_64 · role existente **LabRole**.
+2. **Code → Upload from → .zip file**: subir
+   `packages/telemetry-export/dist/telemetry-export.zip`.
+3. Handler: `index.handler` · Timeout: **5 min** · Memory: **512 MB**.
+4. Environment variable: `ARCHIVE_BUCKET=snowball-archive-<sufijo>`.
+   Opcionales: `DDB_TABLE`, `DDB_STATE_TABLE`.
+
+La función escanea `snowball-unit-state`, consulta el histórico del día
+anterior en `snowball-telemetry` y escribe un objeto gzip NDJSON por unidad en
+`telemetry/aaaa/mm/dd/<unidad>.ndjson.gz`. Para probarla manualmente, usar un
+evento como `{"date":"2026-09-06"}`. La respuesta debe terminar con
+`"failed":[]`.
+
+**EventBridge → Rules → Create rule**: Name `snowball-telemetry-export` ·
+Schedule · cron `cron(15 0 * * ? *)` · target Lambda
+`snowball-telemetry-export`. La consola agrega el permiso de invocación.
+
 ---
 
 ## 14. Dashboard — build y publicación
@@ -877,6 +976,8 @@ reemplazan las instancias, así que no hay que recompilar por eso.
 
 - [ ] MQTT test client muestra mensajes llegando a `snowball/+/telemetry`
 - [ ] DynamoDB acumula ítems nuevos por unidad (Explore items, ordenados por `ts`)
+- [ ] `snowball-unit-state` tiene exactamente una fila por unidad activa, con el `ts` más reciente
+- [ ] Recién creada la tabla de estado, `GET /api/units` devuelve `last_reading: null` hasta que llega la próxima lectura
 - [ ] La cola `snowball-readings` drena (mensajes *in flight* mientras el procesador corre)
 - [ ] `snowball-readings-dlq` sigue vacía (si tiene mensajes, mirar qué payload rompió el parseo)
 
@@ -893,6 +994,9 @@ reemplazan las instancias, así que no hay que recompilar por eso.
 - [ ] `curl http://<DNS-DEL-ALB>/api/units` devuelve las unidades con su última lectura
 - [ ] El dashboard (website endpoint de S3) muestra las tarjetas actualizándose
       en vivo y la alerta en la tabla
+- [ ] La Lambda deja un `.ndjson.gz` por unidad con lecturas en `telemetry/aaaa/mm/dd/`
+- [ ] El bucket tiene la regla `telemetry-to-glacier`
+- [ ] Login, `/auth/me`, roles y aislamiento por tenant funcionan a través del ALB
 - [ ] Terminar una instancia a mano: el ASG levanta otra y vuelve a `healthy`
       sin intervención
 
@@ -914,7 +1018,7 @@ Lo que factura por hora, en orden de costo:
    prolijo que terminar instancias a mano, que el grupo repondría.
 5. **El bastión** — detenerlo.
 
-DynamoDB / SQS / SNS / IoT Core / S3 quedan como están: centavos o nada en
+DynamoDB / SQS / SNS / IoT Core / S3 / Lambda / EventBridge quedan como están: centavos o nada en
 reposo. La VPC, las subredes, las tablas de ruteo, los security groups y los
 gateway endpoints **no cuestan nada**: no hace falta borrarlos nunca.
 

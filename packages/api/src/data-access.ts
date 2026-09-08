@@ -71,6 +71,8 @@ export interface DataAccess {
   listUnitIds(scope: Scope): Promise<string[]>;
   unitInScope(unitId: string, scope: Scope): Promise<boolean>;
   latestReading(unitId: string): Promise<IngestedReading | undefined>;
+  /** Latest reading of many units in one BatchGetItem round-trip set. */
+  latestReadings(unitIds: string[]): Promise<Map<string, IngestedReading>>;
   queryTelemetry(unitId: string, query: TelemetryQuery): Promise<IngestedReading[]>;
   listAlerts(limit: number, scope: Scope): Promise<AlertRow[]>;
   findUserByEmail(email: string): Promise<UserRecord | undefined>;

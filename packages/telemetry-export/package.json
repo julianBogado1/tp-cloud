@@ -8,7 +8,7 @@
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
     "bundle": "esbuild src/handler.ts --bundle --platform=node --target=node20 --external:@aws-sdk/* --outfile=dist/index.js",
-    "zip": "cd dist && (zip -j telemetry-export.zip index.js || python3 -m zipfile -c telemetry-export.zip index.js)"
+    "zip": "cd dist && (zip -j telemetry-export.zip index.js || python -m zipfile -c telemetry-export.zip index.js)"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.700.0",

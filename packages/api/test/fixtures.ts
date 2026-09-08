@@ -37,6 +37,7 @@ export const fakeData: DataAccess = {
   listUnitIds: async (scope) => units.filter((u) => inScope(u, scope)).map((u) => u.unit_id),
   unitInScope: async (unitId, scope) => units.some((u) => u.unit_id === unitId && inScope(u, scope)),
   latestReading: async (unitId) => (unitId === 'SB-001' ? telemetry[0] : undefined),
+  latestReadings: async (unitIds) => new Map(telemetry.filter((reading) => unitIds.includes(reading.unit_id)).map((reading) => [reading.unit_id, reading])),
   queryTelemetry: async (unitId, q) => (unitId === 'SB-001' && q.limit > 0 ? telemetry : []),
   listAlerts: async (_limit, scope) =>
     alerts.filter((a) => inScope(units.find((u) => u.unit_id === a.unit_id)!, scope)),

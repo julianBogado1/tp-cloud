@@ -1,10 +1,11 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, QueryCommand, type BatchGetCommand } from '@aws-sdk/lib-dynamodb';
 import { Pool } from 'pg';
 import type { IngestedReading, ThresholdConfig } from '@snowball/shared';
 import { NAMES } from '@snowball/shared';
 import type { Scope } from './auth/scope';
 import { unitScopeSql } from './auth/scope';
+import { batchGetAll } from './batch-get';
 import {
   DuplicateEmailError,
   type AckResult,
@@ -21,12 +22,15 @@ import type { TelemetryQuery } from './query';
 
 /**
  * Real data access: units/config/alerts from RDS (standard PG* variables),
- * telemetry from DynamoDB. The `9999` upper bound keeps the `_state` item
- * (the alert processor's per-unit excursion state, SK `_state`) out of every
- * result — `_` sorts after `9`.
+ * telemetry from DynamoDB. The latest reading of a unit comes from the
+ * current-state table (one item per unit, overwritten by the IoT rule);
+ * history queries go to the telemetry table. There, the `9999` upper bound
+ * keeps the `_state` item (the alert processor's per-unit excursion state,
+ * SK `_state`) out of every result — `_` sorts after `9`.
  */
 
 const TABLE = process.env.DDB_TABLE ?? NAMES.telemetryTable;
+const STATE_TABLE = process.env.DDB_STATE_TABLE ?? NAMES.unitStateTable;
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
@@ -80,16 +84,12 @@ async function unitInScope(unitId: string, scope: Scope): Promise<boolean> {
 }
 
 async function latestReading(unitId: string): Promise<IngestedReading | undefined> {
-  const { Items } = await ddb.send(
-    new QueryCommand({
-      TableName: TABLE,
-      KeyConditionExpression: 'unit_id = :u AND ts BETWEEN :from AND :to',
-      ExpressionAttributeValues: { ':u': unitId, ':from': '0', ':to': '9999' },
-      ScanIndexForward: false,
-      Limit: 1,
-    }),
-  );
-  return Items?.[0] as IngestedReading | undefined;
+  const { Item } = await ddb.send(new GetCommand({ TableName: STATE_TABLE, Key: { unit_id: unitId } }));
+  return Item as IngestedReading | undefined;
+}
+
+function latestReadings(unitIds: string[]): Promise<Map<string, IngestedReading>> {
+  return batchGetAll((cmd: BatchGetCommand) => ddb.send(cmd), STATE_TABLE, unitIds);
 }
 
 async function queryTelemetry(unitId: string, query: TelemetryQuery): Promise<IngestedReading[]> {
@@ -314,6 +314,7 @@ export const dataAccess: DataAccess = {
   listUnitIds,
   unitInScope,
   latestReading,
+  latestReadings,
   queryTelemetry,
   listAlerts,
   findUserByEmail,

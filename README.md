@@ -8,10 +8,13 @@ sirve la lectura al dashboard.
 
 ```
 INGESTA (máquinas)
-simulator (local) ──MQTT/TLS──▶ IoT Core ──regla──▶ DynamoDB (telemetría)
-                                          └─regla──▶ SQS ──▶ alert-processor (EC2) ──▶ SNS (mail/SMS)
+simulator (local) ──MQTT/TLS──▶ IoT Core ──regla──▶ DynamoDB snowball-telemetry (histórico, TTL 30 d)
+              ├─regla──▶ DynamoDB snowball-unit-state (última lectura por unidad)
+              └─regla──▶ SQS ──▶ alert-processor (EC2) ──▶ SNS (mail/SMS)
                                                                     │
                                                               RDS (umbrales, alertas)
+ARCHIVO
+EventBridge (diario 00:15 UTC) ──▶ telemetry-export (Lambda) ──▶ S3 telemetry/aaaa/mm/dd/*.ndjson.gz ──▶ Glacier
 LECTURA (humanos)
 dashboard (estático, S3) ──HTTP+JWT/WS──▶ api (EC2) ──▶ DynamoDB + RDS + Device Shadow
 ```
@@ -19,7 +22,8 @@ dashboard (estático, S3) ──HTTP+JWT/WS──▶ api (EC2) ──▶ DynamoD
 Las dos rutas no se tocan: la cola es exclusiva del `alert-processor`; la
 `api` no consume SQS — lee lo que la ingesta ya guardó, y el feed en vivo
 del WebSocket lo resuelve consultando DynamoDB solo por las unidades que los
-dashboards conectados están mirando.
+dashboards conectados están mirando. La última lectura sale de
+`snowball-unit-state` y el historial de `snowball-telemetry`.
 
 ## Estructura
 
@@ -29,6 +33,7 @@ dashboards conectados están mirando.
 | `packages/simulator` | Unidades de frío simuladas: cliente MQTT con certificado X.509, escenarios de excursión/silencio, Device Shadow | **local** |
 | `packages/alert-processor` | Consumidor de SQS: máquina de estados de excursión, umbrales desde RDS, alertas a SNS + RDS. Stateless (estado en DynamoDB) | EC2, artefacto de un solo archivo |
 | `packages/api` | REST + WebSocket para el dashboard: login con JWT propio (`/auth`), roles operador/supervisor/admin con alcance por cliente, lectura de unidades/alertas/telemetría, acknowledgement de alertas, configuración remota vía Device Shadow y ABM de usuarios. Stateless | EC2, artefacto de un solo archivo |
+| `packages/telemetry-export` | Lambda diaria: copia el histórico del día anterior de DynamoDB a S3 (`.ndjson.gz` por unidad) para el archivo en Glacier. También corre local (`npm run export`) | Lambda (EventBridge cron) |
 | `packages/dashboard` | Frontend React (Vite): tarjetas por unidad con feed en vivo, historial y alertas. Compila a archivos 100 % estáticos | S3 static website |
 | `infra/sql/` | `schema.sql` y `seed.sql` de la base de dominio (RDS PostgreSQL) | — |
 | `docs/infra-aws-consola.md` | **Guía paso a paso** para crear toda la infraestructura desde la consola AWS y desplegar cada módulo | — |
@@ -49,6 +54,9 @@ npm run alert-processor
 
 # API (necesita JWT_SECRET y PG*; opcionales IOT_ENDPOINT, CORS_ORIGIN, PORT, LIVE_POLL_MS, DDB_TABLE — ver packages/api/.env.example)
 npm run api
+
+# exportación a S3 a mano (necesita ARCHIVE_BUCKET; --date opcional, default ayer UTC)
+npm run export -- --date 2026-09-06
 
 # dashboard en modo dev (VITE_API_BASE en packages/dashboard/.env, ver .env.example)
 npm run dashboard
@@ -76,7 +84,8 @@ npm run dashboard
 ```bash
 npm run bundle    # esbuild → un .js autocontenido por artefacto de EC2
 # packages/alert-processor/dist/alert-processor.bundle.js  → scp + node
-# packages/api/dist/api.bundle.js                           → scp + node
+# packages/api/dist/api.bundle.js                           → bundle para EC2/S3
+# packages/telemetry-export/dist/telemetry-export.zip       → Lambda snowball-telemetry-export
 
 VITE_API_BASE=http://<api>:3000 npm run build -w @snowball/dashboard
 aws s3 sync packages/dashboard/dist/ s3://<bucket>/ --delete
