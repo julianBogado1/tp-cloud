@@ -6,6 +6,7 @@
 
 export const NAMES = {
   telemetryTable: 'snowball-telemetry',
+  unitStateTable: 'snowball-unit-state',
   readingsQueue: 'snowball-readings',
   readingsDlq: 'snowball-readings-dlq',
   thermalExcursionTopic: 'snowball-thermal-excursion',
@@ -13,6 +14,8 @@ export const NAMES = {
   noSignalTopic: 'snowball-no-signal',
   iotRule: 'snowball_telemetry',
   mqttTopicPrefix: 'snowball',
+  /** S3 key prefix of the daily archive: telemetry/yyyy/mm/dd/<unit>.ndjson.gz */
+  archivePrefix: 'telemetry/',
 } as const;
 
 export function telemetryTopic(unitId: string): string {

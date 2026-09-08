@@ -14,11 +14,11 @@ function iterate(unit: UnitState, times: number, now: Date): UnitState {
 describe('generateReading — telemetry of a simulated unit', () => {
   const now = new Date('2026-08-30T12:00:00.000Z');
 
-  test('the reading carries unit_id, the given clock ts and expires_at at 30 days', () => {
+  test('the reading carries unit_id and the given clock ts, and no expires_at', () => {
     const { reading } = generateReading(createUnit('SB-001', -18), now, fixedRng);
     expect(reading.unit_id).toBe('SB-001');
     expect(reading.ts).toBe('2026-08-30T12:00:00.000Z');
-    expect(reading.expires_at).toBe(Math.floor(now.getTime() / 1000) + 30 * 24 * 3600);
+    expect(reading).not.toHaveProperty('expires_at');
   });
 
   test('without an excursion the temperature stays near the setpoint', () => {

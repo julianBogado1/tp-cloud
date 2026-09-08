@@ -31,6 +31,15 @@ describe('parseReading — SQS message body deposited by the IoT rule', () => {
     expect(() => parseReading(JSON.stringify({ ...valid, temp_c: 'cold' }))).toThrow(/temp_c/);
   });
 
+  test('accepts a reading without expires_at (rule not yet updated or device payload)', () => {
+    const { expires_at, ...rest } = valid;
+    expect(parseReading(JSON.stringify(rest))).toEqual(rest);
+  });
+
+  test('rejects a non-numeric expires_at when present', () => {
+    expect(() => parseReading(JSON.stringify({ ...valid, expires_at: 'soon' }))).toThrow(/expires_at/);
+  });
+
   test('rejects a ts that is not a parseable ISO date', () => {
     expect(() => parseReading(JSON.stringify({ ...valid, ts: 'yesterday' }))).toThrow(/ts/);
   });

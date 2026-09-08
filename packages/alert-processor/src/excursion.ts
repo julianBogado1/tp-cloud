@@ -1,4 +1,4 @@
-import type { Alert, ExcursionState, IngestedReading, ThresholdConfig } from '@snowball/shared';
+import type { Alert, ExcursionState, Telemetry, ThresholdConfig } from '@snowball/shared';
 
 export interface EvaluationResult {
   state: ExcursionState;
@@ -19,7 +19,7 @@ export interface EvaluationResult {
  */
 export function evaluate(
   state: ExcursionState,
-  reading: IngestedReading,
+  reading: Telemetry,
   config: ThresholdConfig,
 ): EvaluationResult {
   const inRange = reading.temp_c >= config.temp_min_c && reading.temp_c <= config.temp_max_c;

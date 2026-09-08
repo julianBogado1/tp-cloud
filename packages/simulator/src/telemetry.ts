@@ -1,6 +1,5 @@
 import type { Telemetry } from '@snowball/shared';
 
-const TTL_SECONDS = 30 * 24 * 3600;
 /** how much the target temperature rises during an excursion (open door / cooling failure) */
 const EXCURSION_DELTA_C = 10;
 
@@ -52,7 +51,6 @@ export function generateReading(
     lon: Math.round(lon * 1e6) / 1e6,
     battery: Math.round(battery * 10) / 10,
     signal: 2 + Math.floor(rng() * 4),
-    expires_at: Math.floor(now.getTime() / 1000) + TTL_SECONDS,
   };
   return { reading, unit: next };
 }

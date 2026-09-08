@@ -1,12 +1,15 @@
-import type { IngestedReading } from '@snowball/shared';
+import type { Telemetry } from '@snowball/shared';
 
-const NUMERIC_FIELDS = ['temp_c', 'humidity_pct', 'lat', 'lon', 'battery', 'signal', 'expires_at'] as const;
+const NUMERIC_FIELDS = ['temp_c', 'humidity_pct', 'lat', 'lon', 'battery', 'signal'] as const;
 
 /**
  * Validates the SQS message body. A malformed message throws: the loop leaves
  * it undeleted and, after maxReceiveCount retries, SQS moves it to the DLQ.
+ *
+ * `expires_at` is added by the IoT rule and is irrelevant here, so it is only
+ * checked when present: a device payload without it still parses.
  */
-export function parseReading(body: string): IngestedReading {
+export function parseReading(body: string): Telemetry {
   let raw: unknown;
   try {
     raw = JSON.parse(body);
@@ -26,5 +29,8 @@ export function parseReading(body: string): IngestedReading {
       throw new Error(`reading with invalid ${field}: ${String(obj[field])}`);
     }
   }
-  return obj as unknown as IngestedReading;
+  if (obj.expires_at !== undefined && (typeof obj.expires_at !== 'number' || Number.isNaN(obj.expires_at))) {
+    throw new Error(`reading with invalid expires_at: ${String(obj.expires_at)}`);
+  }
+  return obj as unknown as Telemetry;
 }

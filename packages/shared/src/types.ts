@@ -2,15 +2,18 @@
  * Shared types between the simulator, the IoT Core rule and the backend.
  *
  * The MQTT payload is exactly `Telemetry`. The IoT Core rule
- * (`SELECT *, topic(2) AS unit_id FROM 'snowball/+/telemetry'`) adds
- * `unit_id` from the topic, so what reaches DynamoDB and SQS is
- * `IngestedReading`. The simulator also includes `unit_id` in the payload
- * so both match byte for byte.
+ *
+ *   SELECT *, topic(2) AS unit_id, floor(timestamp() / 1000) + 2592000 AS expires_at
+ *   FROM 'snowball/+/telemetry'
+ *
+ * adds `unit_id` from the topic and the server-side TTL, so what reaches
+ * DynamoDB (both tables) and SQS is `IngestedReading`. The simulator also
+ * includes `unit_id` in the payload so both match byte for byte.
  */
 
 export interface Telemetry {
   unit_id: string;
-  /** ISO-8601 UTC — DynamoDB sort key, sorts lexicographically */
+  /** ISO-8601 UTC — DynamoDB sort key of the history table, sorts lexicographically */
   ts: string;
   temp_c: number;
   humidity_pct: number;
@@ -20,11 +23,13 @@ export interface Telemetry {
   battery: number;
   /** signal quality 0-5 */
   signal: number;
-  /** epoch seconds for the DynamoDB TTL (ts + 30 days) */
-  expires_at: number;
 }
 
-export type IngestedReading = Telemetry;
+/** What the rule writes: the device payload plus the TTL it computed. */
+export interface IngestedReading extends Telemetry {
+  /** epoch seconds for the DynamoDB TTL — ingestion instant + 30 days, set by the rule, never by the device */
+  expires_at: number;
+}
 
 /** Row of the `device_config` table in RDS */
 export interface ThresholdConfig {
