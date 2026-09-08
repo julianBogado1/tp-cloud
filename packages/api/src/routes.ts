@@ -1,48 +1,23 @@
 import { Router } from 'express';
-import type { IngestedReading } from '@snowball/shared';
-import { parseTelemetryQuery, type TelemetryQuery } from './query';
+import { getAuth, requireRole } from './auth/middleware';
+import { scopeOf } from './auth/scope';
+import type { DataAccess } from './data-access';
+import { parseTelemetryQuery } from './query';
 
 /**
- * REST surface consumed by the static dashboard. Read-only over what the
- * ingest path already stored: units + config from RDS, telemetry from
- * DynamoDB, alerts from RDS. Data access is injected so routes are testable
- * without AWS.
+ * Read surface consumed by the dashboard, filtered by the caller's tenant
+ * scope. authenticate() is mounted by index.ts on /api before this router
+ * (and by every test in beforeAll), so res.locals.auth is always present here.
+ * Data access is injected so the routes are testable without AWS.
  */
-
-export interface UnitRow {
-  unit_id: string;
-  description: string | null;
-  active: boolean;
-  setpoint_c: number | null;
-  temp_min_c: number | null;
-  temp_max_c: number | null;
-}
-
-export interface AlertRow {
-  id: number;
-  unit_id: string;
-  severity: string;
-  since: string;
-  emitted_at: string;
-  duration_min: number;
-  temp_c: number | null;
-  detail: string;
-  acknowledged_at: string | null;
-}
-
-export interface DataAccess {
-  listUnits(): Promise<UnitRow[]>;
-  latestReading(unitId: string): Promise<IngestedReading | undefined>;
-  queryTelemetry(unitId: string, query: TelemetryQuery): Promise<IngestedReading[]>;
-  listAlerts(limit: number): Promise<AlertRow[]>;
-}
 
 export function createRouter(data: DataAccess): Router {
   const router = Router();
 
   router.get('/units', async (_req, res) => {
+    const scope = scopeOf(getAuth(res));
     try {
-      const units = await data.listUnits();
+      const units = await data.listUnits(scope);
       const withReadings = await Promise.all(
         units.map(async (unit) => ({
           ...unit,
@@ -57,6 +32,7 @@ export function createRouter(data: DataAccess): Router {
   });
 
   router.get('/units/:id/telemetry', async (req, res) => {
+    const scope = scopeOf(getAuth(res));
     let query;
     try {
       query = parseTelemetryQuery(req.query as Record<string, string>);
@@ -65,6 +41,10 @@ export function createRouter(data: DataAccess): Router {
       return;
     }
     try {
+      if (!(await data.unitInScope(req.params.id, scope))) {
+        res.status(404).json({ error: 'not found' });
+        return;
+      }
       res.json(await data.queryTelemetry(req.params.id, query));
     } catch (err) {
       console.error(`GET /units/${req.params.id}/telemetry failed:`, err);
@@ -73,18 +53,42 @@ export function createRouter(data: DataAccess): Router {
   });
 
   router.get('/alerts', async (req, res) => {
-    const limit = Math.min(Number(req.query.limit) || 100, 1000);
+    const scope = scopeOf(getAuth(res));
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 1000);
     try {
-      res.json(await data.listAlerts(limit));
+      res.json(await data.listAlerts(limit, scope));
     } catch (err) {
       console.error('GET /alerts failed:', err);
       res.status(500).json({ error: 'internal error' });
     }
   });
 
+  router.post('/alerts/:id/ack', requireRole('supervisor'), async (req, res) => {
+    const auth = getAuth(res);
+    const alertId = Number(req.params.id);
+    if (!Number.isInteger(alertId) || alertId < 1) {
+      res.status(400).json({ error: 'alert id must be a positive integer' });
+      return;
+    }
+    try {
+      const result = await data.acknowledgeAlert(alertId, auth.userId, scopeOf(auth));
+      if (result.status === 'not-found') res.status(404).json({ error: 'not found' });
+      else if (result.status === 'already') res.status(409).json({ error: 'already acknowledged' });
+      else res.json(result.alert);
+    } catch (err) {
+      console.error(`POST /alerts/${req.params.id}/ack failed:`, err);
+      res.status(500).json({ error: 'internal error' });
+    }
+  });
+
+  return router;
+}
+
+/** Mounted last in index.ts so every unmatched /api path is JSON. */
+export function notFound(): Router {
+  const router = Router();
   router.use((_req, res) => {
     res.status(404).json({ error: 'not found' });
   });
-
   return router;
 }

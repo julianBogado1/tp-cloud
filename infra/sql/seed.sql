@@ -25,10 +25,10 @@ INSERT INTO device_config (unit_id, setpoint_c, temp_min_c, temp_max_c, toleranc
   ('SB-003', 5, 2, 8, 1)
 ON CONFLICT (unit_id) DO NOTHING;
 
--- PLACEHOLDER: generate real bcrypt hashes when the API is implemented (phase 2),
--- e.g. with: node -e "console.log(require('bcryptjs').hashSync('the-password', 10))"
+-- Demo credentials (change in production): operator123 / supervisor123 / admin123
+-- Regenerate a hash with: npx tsx scripts/hash-password.ts <password>
 INSERT INTO users (email, password_hash, role, client_id) VALUES
-  ('operator@snowball.example',   'REPLACE_BCRYPT_HASH', 'operator', 1),
-  ('supervisor@snowball.example', 'REPLACE_BCRYPT_HASH', 'supervisor', 1),
-  ('admin@snowball.example',      'REPLACE_BCRYPT_HASH', 'admin', NULL)
-ON CONFLICT (email) DO NOTHING;
+  ('operator@snowball.example',   '$2b$10$Dmrj/MMAaLlkv1lhszJHM.19Dnl4zh4bUflz0ucOO0qdSVBhCEoWS',   'operator',   1),
+  ('supervisor@snowball.example', '$2b$10$9/oEgoC0iL3QFKLxfuYN0uHlRpdj7GTY4ZUUSnyQbf.LLEodW2mFW', 'supervisor', 1),
+  ('admin@snowball.example',      '$2b$10$sLxBcv1cR/gMGCxUWIVGUeabhS1zURIPm0dec0NUZ/Ljjnq9rbC3y',      'admin',      NULL)
+ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash;

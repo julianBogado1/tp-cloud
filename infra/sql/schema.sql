@@ -27,10 +27,13 @@ CREATE TABLE IF NOT EXISTS units (
 CREATE TABLE IF NOT EXISTS users (
     id          SERIAL PRIMARY KEY,
     email       TEXT NOT NULL UNIQUE,
-    -- bcrypt; the JWT is issued by the API (phase 2)
+    -- bcrypt (cost 10); the JWT is issued by the API (POST /auth/login)
     password_hash TEXT NOT NULL,
     role        TEXT NOT NULL CHECK (role IN ('operator', 'supervisor', 'admin')),
-    client_id   INTEGER REFERENCES clients(id)
+    client_id   INTEGER REFERENCES clients(id),
+    active      BOOLEAN NOT NULL DEFAULT true,
+    -- tenant scope is derived from the role: only admins have no client
+    CONSTRAINT users_admin_no_client CHECK ((role = 'admin') = (client_id IS NULL))
 );
 
 CREATE TABLE IF NOT EXISTS device_config (
@@ -60,3 +63,12 @@ CREATE TABLE IF NOT EXISTS alerts (
 
 CREATE INDEX IF NOT EXISTS alerts_unit_emitted ON alerts (unit_id, emitted_at DESC);
 CREATE INDEX IF NOT EXISTS alerts_unacknowledged ON alerts (emitted_at) WHERE acknowledged_at IS NULL;
+
+-- Migration for databases created before the auth feature (idempotent).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT true;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_admin_no_client') THEN
+    ALTER TABLE users ADD CONSTRAINT users_admin_no_client
+      CHECK ((role = 'admin') = (client_id IS NULL));
+  END IF;
+END $$;
