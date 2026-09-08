@@ -184,7 +184,7 @@ certs/
 SELECT *, topic(2) AS unit_id FROM 'snowball/+/telemetry'
 ```
 
-3. **Action 1 — DynamoDBv2**: *Insert a message into a DynamoDB table* →
+3. **Action 1 — DynamoDBv2**: *Split message into multiple columns of a DynamoDB table* →
    Table: `snowball-telemetry` → IAM role: **LabRole**.
 4. **Add action** → **Action 2 — SQS**: Queue: `snowball-readings` →
    *Use the message as-is* (sin base64) → IAM role: **LabRole**.
