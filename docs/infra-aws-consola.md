@@ -173,6 +173,24 @@ certs/
 └── SB-003/…
 ```
 
+### 4.3 bis. Alta de unidades por script (alternativa a los clicks)
+
+Desde **CloudShell** (o local con las credenciales de la sesión Academy):
+
+```bash
+git clone <repo> && cd tp-cloud
+scripts/provision-unit.sh SB-004
+```
+
+Crea el thing, el certificado (queda en `certs/SB-004/`), le adjunta
+`snowball-device-policy` y lo asocia al thing; al final imprime el `INSERT`
+para RDS. Probarlo una vez de punta a punta antes de la demo: usa las
+credenciales de la sesión (las mismas que la consola), no LabRole.
+
+Si falla después de crear el certificado, el script imprime los comandos de
+limpieza: hay que dar de baja el certificado huérfano en AWS **y** borrar la
+carpeta local `certs/<UNIT>/` antes de reintentar.
+
 ### 4.4 La regla de ingesta (el corazón de esta revisión)
 
 **IoT Core → Message routing → Rules → Create rule**:
@@ -245,6 +263,18 @@ Aplicar esquema y datos de demo desde tu máquina (endpoint en la pestaña
 psql "host=<ENDPOINT-RDS> dbname=snowball user=snowball sslmode=require" \
   -f infra/sql/schema.sql -f infra/sql/seed.sql
 ```
+
+Usuarios demo que crea el seed (cambiar las contraseñas fuera de la demo):
+
+| Email | Contraseña | Rol | Cliente |
+|---|---|---|---|
+| operator@snowball.example | operator123 | operator | 1 |
+| supervisor@snowball.example | supervisor123 | supervisor | 1 |
+| admin@snowball.example | admin123 | admin | — (ve todo) |
+
+Nuevo hash: `npx tsx scripts/hash-password.ts <contraseña>`. Si la base ya
+existía de antes, el bloque final de `schema.sql` agrega la columna
+`users.active` y la restricción admin ⇔ sin cliente; es idempotente.
 
 ---
 
@@ -345,6 +375,9 @@ scp -i labsuser.pem packages/api/dist/api.bundle.js ec2-user@<IP-PUBLICA>:
 # en la instancia (otra sesión de tmux)
 export AWS_REGION=us-east-1
 export PGHOST='<ENDPOINT-RDS>' PGDATABASE=snowball PGUSER=snowball PGPASSWORD='<pass>'
+export JWT_SECRET="$(head -c 48 /dev/urandom | base64)"   # ≥ 32 chars; el mismo en todas las instancias
+export IOT_ENDPOINT='<xxxx-ats.iot.us-east-1.amazonaws.com>'   # el del simulador (§4.1)
+export CORS_ORIGIN='http://<bucket>.s3-website-us-east-1.amazonaws.com'
 # opcionales: PORT (3000), LIVE_POLL_MS (3000), DDB_TABLE
 
 node api.bundle.js
@@ -352,6 +385,34 @@ node api.bundle.js
 
 Probar: `curl http://<IP-PUBLICA>:3000/health` → `{"ok":true}` y
 `curl http://<IP-PUBLICA>:3000/api/units`.
+
+Antes de confiar en la configuración remota, verificar que `LabInstanceProfile`
+permite el data plane de IoT desde la instancia:
+
+```bash
+aws iot-data get-thing-shadow --thing-name SB-001 /dev/stdout
+```
+
+Si responde `AccessDenied`, `GET /api/units/:id/shadow` devuelve **500** (no
+503: el 503 es solo cuando `IOT_ENDPOINT` no está seteado) y `PUT
+/api/units/:id/config` con cambio de setpoint devuelve **200** con
+`warning: "shadow update failed"` — la escritura en RDS se guarda igual, solo
+falla el empuje al equipo (limitación del laboratorio); los umbrales se
+siguen pudiendo editar porque solo tocan RDS.
+
+Login de prueba:
+
+```bash
+curl -s -X POST http://<IP-PUBLICA>:3000/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@snowball.example","password":"admin123"}'
+# → {"token":"…","user":{…}}
+curl -s http://<IP-PUBLICA>:3000/api/units -H "Authorization: Bearer <token>"
+```
+
+Nota de seguridad: en Academy tanto el sitio S3 como la API van por HTTP
+plano, así que contraseña y token viajan sin cifrar. TLS (ALB + ACM o
+CloudFront) queda para una fase posterior.
 
 ---
 
@@ -403,6 +464,15 @@ aws s3 sync packages/dashboard/dist/ s3://snowball-dashboard-<sufijo>/ --delete
 - [ ] `snowball-readings-dlq` sigue vacía (si tiene mensajes, mirar qué payload rompió el parseo)
 - [ ] `GET /api/units` devuelve las unidades con su última lectura
 - [ ] El dashboard (website endpoint de S3) muestra las tarjetas actualizándose en vivo y la alerta en la tabla
+- [ ] Login con cada rol: operator ve solo SB-001/SB-002, admin ve las tres.
+- [ ] Como supervisor, "Marcar vista" en una alerta → la fila queda gris y RDS tiene `acknowledged_by`.
+- [ ] Como supervisor, cambiar el setpoint de SB-001 → el simulador loguea `desired setpoint … applying` y el panel pasa de "(pendiente)" a aplicado.
+- [ ] Como admin, crear un usuario y desactivarlo → ya no puede loguearse.
+
+> Ojo: "ya no puede loguearse" es sobre intentos nuevos de login. El JWT que ese
+> usuario ya tenía sigue siendo válido hasta que expire (hasta 8 h) — desactivarlo
+> no lo desloguea ni corta su conexión `/live` si tenía una abierta, porque el feed
+> fija las unidades permitidas al momento de conectar el WebSocket.
 
 ## 12. Al terminar cada sesión (presupuesto)
 

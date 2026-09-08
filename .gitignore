@@ -8,4 +8,5 @@ certs/
 *.key
 .env
 .env.*
+!packages/*/.env.example
 docs/superpowers

@@ -73,3 +73,29 @@ table.alerts th, table.alerts td {
 table.alerts th { color: var(--muted); font-weight: 500; font-size: 12px; }
 
 .empty { color: var(--muted); }
+
+.spacer { flex: 1; }
+.muted { color: var(--muted); }
+.error { color: var(--excursion); margin: 4px 0; }
+button.link { background: none; border: none; color: var(--accent); cursor: pointer; font: inherit; padding: 0; }
+
+.login { display: grid; place-items: center; min-height: 80vh; }
+.login-card {
+  display: grid; gap: 12px; width: min(360px, 100%);
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 24px;
+}
+.login-card h1 { margin: 0; }
+.login-card label { display: grid; gap: 4px; color: var(--muted); }
+.login-card input, .form input, .form select {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px;
+  font: inherit;
+}
+.login-card button[type=submit], .form button.primary {
+  background: var(--accent); color: #0b1220; border: none; border-radius: 6px; padding: 10px; font: inherit; cursor: pointer;
+}
+button:disabled { opacity: 0.6; cursor: default; }
+
+.form { display: grid; gap: 8px; max-width: 320px; }
+.form label { display: grid; gap: 4px; color: var(--muted); }
+.form h3 { margin: 16px 0 4px; font-size: 14px; color: var(--muted); }
+tr.acked td { color: var(--muted); }
