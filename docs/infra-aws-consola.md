@@ -1,4 +1,4 @@
-# Snowball — Guía de infraestructura por consola AWS (ingesta + alertas + API + dashboard)
+# Snowball — Guía de infraestructura por consola AWS (VPC + ingesta + alertas + API + dashboard)
 
 Guía paso a paso para crear **a mano, desde la consola**, todos los recursos que
 el código de este repo necesita. No usamos IaC en esta entrega: cualquier
@@ -6,10 +6,30 @@ integrante puede reconstruir el entorno siguiendo este documento (por ejemplo,
 después de un *Reset* del Learner Lab).
 
 > **Los nombres importan.** El código lee estos nombres desde
-> `packages/shared/src/config.ts`. Si cambiás un nombre acá, cambialo allá.
+> `packages/shared/src/config.ts` (`NAMES` para los servicios, `NETWORK` para la
+> red). Si cambiás un nombre acá, cambialo allá.
+
+**El orden de este documento es el orden de creación.** La red va primero porque
+todo lo demás nace adentro: no se puede crear la RDS sin su *DB subnet group*,
+ni el ALB sin dos subredes públicas, ni el Auto Scaling Group sin el *target
+group* del balanceador.
 
 | Recurso | Nombre |
 |---|---|
+| VPC | `snowball-vpc` — `10.0.0.0/16` |
+| Subredes públicas | `snowball-public-a` `10.0.1.0/24` · `snowball-public-b` `10.0.2.0/24` |
+| Subredes de aplicación | `snowball-app-a` `10.0.11.0/24` · `snowball-app-b` `10.0.12.0/24` |
+| Subredes de datos | `snowball-data-a` `10.0.21.0/24` · `snowball-data-b` `10.0.22.0/24` |
+| Internet Gateway | `igw-snowball` |
+| NAT Gateway | `nat-snowball-a` (zonal, en `snowball-public-a`) |
+| Tablas de ruteo | `rt-public`, `rt-app-a`, `rt-app-b`, `rt-data` |
+| Gateway endpoints | `vpce-s3`, `vpce-ddb` |
+| Security groups | `sg-alb`, `sg-app`, `sg-db`, `sg-bastion` |
+| NACL | `nacl-data` (solo sobre las subredes de datos) |
+| Balanceador | `snowball-alb` + target group `snowball-app-tg` |
+| Cómputo | launch template `snowball-app-lt` → ASG `snowball-app-asg` (`t3.small`) |
+| Bastión | `snowball-bastion` |
+| RDS | `snowball-db` · DB subnet group `snowball-db-subnets` · base `snowball` |
 | Tabla DynamoDB | `snowball-telemetry` |
 | Cola SQS principal | `snowball-readings` |
 | Cola SQS DLQ | `snowball-readings-dlq` |
@@ -24,15 +44,211 @@ después de un *Reset* del Learner Lab).
 
 1. **Start Lab** en AWS Academy y esperar el círculo verde; entrar por el link **AWS**.
 2. Verificar arriba a la derecha que la región sea **N. Virginia (us-east-1)**. Todo se crea ahí.
-3. Recordatorios de presupuesto: lo único de esta guía que factura por hora es
-   **RDS y las EC2** (y el NAT/ALB cuando llegue la fase de VPC). DynamoDB, SQS,
-   SNS e IoT Core a escala de demo cuestan centavos y no hace falta borrarlos.
-4. En este laboratorio no se pueden crear roles IAM: donde un servicio pida un
+3. **Dos zonas de disponibilidad: `us-east-1a` y `us-east-1b`.** No es una
+   preferencia estética y conviene tenerlo claro antes de empezar: RDS Multi-AZ
+   exige un *DB subnet group* con subredes en al menos dos zonas, y un ALB exige
+   al menos dos subredes públicas en zonas distintas. El requisito de alta
+   disponibilidad impone el número de subredes por sí solo.
+4. Recordatorios de presupuesto: lo que factura por hora es **RDS, las EC2, el
+   NAT Gateway y el ALB**. DynamoDB, SQS, SNS, IoT Core y S3 a escala de demo
+   cuestan centavos y no hace falta borrarlos. Ver la sección final.
+5. En este laboratorio no se pueden crear roles IAM: donde un servicio pida un
    rol, usar siempre **LabRole** (y en EC2, el instance profile **LabInstanceProfile**).
+6. Antes de comprometerse con el diseño conviene confirmar en la consola tres
+   cosas: que se pueda crear un **NAT Gateway**, que **RDS admita Multi-AZ** con
+   `db.t3.micro`, y que en **IoT Core** se puedan crear things, certificados y
+   una regla que asuma el LabRole hacia DynamoDB y SQS.
 
 ---
 
-## 1. DynamoDB — tabla de telemetría
+## 1. VPC, subredes, ruteo y endpoints
+
+Esta sección crea la red entera. Nada de lo que sigue funciona sin ella.
+
+### 1.1 La VPC
+
+**VPC → Your VPCs → Create VPC** → elegir **VPC only** (no el asistente, que
+crea subredes que no son las nuestras):
+
+1. Name tag: `snowball-vpc`
+2. IPv4 CIDR: `10.0.0.0/16`
+3. Sin IPv6, tenancy **Default** → Create.
+
+Son 65.536 direcciones, muchísimas más de las necesarias. La holgura es
+intencional: el espacio de direcciones de una VPC no se puede achicar después, y
+conviene dejar lugar para subredes futuras — una capa de caché, un entorno de
+staging, o el peering con una segunda región.
+
+### 1.2 Las seis subredes
+
+**VPC → Subnets → Create subnet** → VPC: `snowball-vpc`. Crear las seis, una por
+una (la consola permite varias en la misma pantalla con *Add new subnet*):
+
+| Nombre | CIDR | Zona | Tipo | Qué contiene y por qué existe |
+|---|---|---|---|---|
+| `snowball-public-a` | `10.0.1.0/24` | `us-east-1a` | Pública | Nodo del ALB, NAT Gateway y bastión. La única capa que necesita direcciones alcanzables desde Internet |
+| `snowball-public-b` | `10.0.2.0/24` | `us-east-1b` | Pública | Segundo nodo del balanceador. Sin ella el ALB no se puede crear |
+| `snowball-app-a` | `10.0.11.0/24` | `us-east-1a` | Privada | EC2 de la API y el procesador de alertas. Sin IP pública: se alcanza solo a través del ALB |
+| `snowball-app-b` | `10.0.12.0/24` | `us-east-1b` | Privada | Idéntica a la anterior. El ASG mantiene instancias en ambas |
+| `snowball-data-a` | `10.0.21.0/24` | `us-east-1a` | Privada aislada | Instancia primaria de RDS. Sin ruta por defecto de ningún tipo |
+| `snowball-data-b` | `10.0.22.0/24` | `us-east-1b` | Privada aislada | Standby síncrono de RDS, que toma el rol de primaria en un failover |
+
+Cada `/24` deja 251 direcciones usables — AWS reserva cinco por subred — y el
+salto entre el tercer octeto de cada capa (1–2, 11–12, 21–22) hace que el rol de
+una subred se lea de un vistazo en cualquier tabla de ruteo o log de flujo.
+
+En las dos subredes públicas: **Actions → Edit subnet settings → Enable
+auto-assign public IPv4 address**. En las otras cuatro, dejarlo desactivado.
+
+### 1.3 Internet Gateway
+
+**VPC → Internet gateways → Create internet gateway** → Name: `igw-snowball` →
+Create → **Actions → Attach to VPC** → `snowball-vpc`.
+
+> No hay un atributo de subred que diga «pública». Una subred es pública porque
+> una tabla de ruteo apunta al IGW, y nada más. El IGW se adjunta a la VPC
+> entera, no a una subred ni a una zona.
+
+### 1.4 NAT Gateway
+
+**VPC → NAT gateways → Create NAT gateway**:
+
+1. Name: `nat-snowball-a`
+2. Subnet: **`snowball-public-a`**
+3. Connectivity type: **Public** → **Allocate Elastic IP** → Create.
+
+Es **uno solo, y es un recurso zonal**: vive en `us-east-1a`, tiene una Elastic
+IP, y si esa zona cae, se cae con ella. Esa es una debilidad conocida y
+deliberada: si cae la zona `a`, el ALB y el ASG y RDS se recuperan solos, pero
+se pierde la salida a Internet de las instancias privadas y las alertas se
+retrasan hasta que vuelva. Un segundo NAT en `us-east-1b` lo resolvería a
+cambio de unos USD 32 al mes; para esta entrega no se justifica.
+
+### 1.5 Las cuatro tablas de ruteo
+
+La diferencia entre estas cuatro tablas define la seguridad de la arquitectura
+mucho más que cualquier regla de firewall.
+
+**VPC → Route tables → Create route table** (VPC `snowball-vpc`) por cada una, y
+después **Subnet associations** y **Routes** en cada pestaña:
+
+| Tabla | Asociada a | Rutas |
+|---|---|---|
+| `rt-public` | `snowball-public-a`, `snowball-public-b` | `10.0.0.0/16 → local` · `0.0.0.0/0 → igw-snowball` |
+| `rt-app-a` | `snowball-app-a` | `local` · `0.0.0.0/0 → nat-snowball-a` · `pl-s3 → vpce-s3` · `pl-dynamodb → vpce-ddb` |
+| `rt-app-b` | `snowball-app-b` | idénticas a `rt-app-a` |
+| `rt-data` | `snowball-data-a`, `snowball-data-b` | `10.0.0.0/16 → local` |
+
+Las entradas `pl-*` las agrega sola la consola al crear los endpoints (paso 1.6);
+no hay que escribirlas a mano.
+
+**`rt-data` tiene una sola entrada, y eso es el corazón del diseño.** No hay ruta
+hacia el Internet Gateway ni hacia el NAT: una máquina en esa subred no puede
+iniciar una conversación con Internet y —más importante para la demo— no existe
+camino de retorno para un paquete que venga de afuera. El aislamiento de la base
+de datos no depende de una regla de security group que alguien pueda aflojar sin
+querer, sino de que la ruta directamente no existe.
+
+Las tablas de app son **dos idénticas** por una razón operativa, no de
+configuración: si mañana se agrega un segundo NAT Gateway en la zona `b`, alcanza
+con cambiar una línea de `rt-app-b`. Con una tabla compartida habría que
+separarlas primero.
+
+### 1.6 Gateway endpoints para S3 y DynamoDB
+
+**VPC → Endpoints → Create endpoint**, dos veces:
+
+1. Name `vpce-s3` · Type **AWS services** · buscar `com.amazonaws.us-east-1.s3`
+   → elegir el de tipo **Gateway** · VPC `snowball-vpc` · Route tables: marcar
+   **`rt-app-a` y `rt-app-b`** → Create.
+2. Ídem con `com.amazonaws.us-east-1.dynamodb`, Name `vpce-ddb`, las mismas dos
+   tablas.
+
+No cuestan por hora ni por gigabyte, y sacan del NAT el tráfico de las
+instancias hacia esos dos servicios: las consultas de telemetría que la API hace
+a DynamoDB y la exportación del histórico a S3. La escritura masiva de la
+telemetría no los atraviesa —la hace la regla de IoT Core, que vive fuera de la
+VPC— pero el endpoint sigue siendo la diferencia entre pagar procesamiento de NAT
+por cada consulta del dashboard y no pagarlo.
+
+> **Un gateway endpoint no es una caja dentro de una subred.** No tiene ENI, ni
+> IP, ni security group: es una entrada en la tabla de ruteo que desvía el
+> tráfico por el backbone de AWS. Un *interface* endpoint sí sería una ENI con IP
+> privada y security group propio — y por eso cuesta por hora. No usamos ninguno:
+> los de SNS y SQS evitarían el NAT para las alertas y el consumo de la cola,
+> pero cuestan unos USD 7 por mes cada uno más tráfico, y con el volumen de la
+> demo pasar por el NAT sale más barato. Si el volumen crece, el de SQS es el
+> primero que conviene agregar.
+
+---
+
+## 2. Security groups y NACL
+
+### 2.1 Los cuatro security groups encadenados
+
+El principio que ordena toda la configuración: **ningún security group referencia
+un rango de direcciones cuando puede referenciar otro security group.** Un grupo
+como origen es una identidad, no una ubicación: sigue funcionando cuando el ASG
+reemplaza una instancia y le asigna otra IP, y no depende de que el CIDR que
+alguien copió siga siendo el correcto. El resultado es una cadena donde cada
+eslabón solo acepta al anterior.
+
+**EC2 → Security Groups → Create security group**, cuatro veces, todos en
+`snowball-vpc`. Crearlos primero vacíos y después agregar las reglas: se
+referencian entre sí y no se puede apuntar a un grupo que todavía no existe.
+
+| Grupo | Entrante | Saliente |
+|---|---|---|
+| `sg-alb` | `80/TCP` desde `0.0.0.0/0` | `3000/TCP` hacia `sg-app` |
+| `sg-app` | `3000/TCP` desde `sg-alb` · `22/TCP` desde `sg-bastion` | `5432/TCP` hacia `sg-db` · `443/TCP` hacia `0.0.0.0/0` (APIs de AWS vía endpoints y NAT) |
+| `sg-db` | `5432/TCP` desde `sg-app` y nada más | ninguna regla |
+| `sg-bastion` | `22/TCP` desde la IP fija del equipo | `22/TCP` hacia `sg-app` |
+
+Dos aclaraciones sobre los puertos:
+
+- **La API escucha en el 3000**, que es el default de `PORT` en
+  `packages/api/src/index.ts`. El diseño en prosa menciona 8080 en algún lugar;
+  el código manda.
+- **El listener del ALB es HTTP en el 80.** En producción sería 443 con un
+  certificado de ACM, pero en el Learner Lab no se puede registrar un dominio y
+  sin dominio un certificado público de ACM no se puede validar. El endpoint del
+  sitio en S3 también es HTTP, así que la demo es HTTP de punta a punta.
+
+> Con la ingesta en IoT Core, **ningún puerto de entrada de datos existe en la
+> VPC**: el único ingreso de aplicación es el `3000` desde el ALB. La versión
+> previa de este diseño abría el `8883` desde `0.0.0.0/0` para los sensores y el
+> `2049` para NFS hacia EFS. La superficie de exposición del cómputo se redujo a
+> un solo puerto desde una sola identidad.
+
+### 2.2 La NACL de la capa de datos
+
+Los security groups son **stateful**: si se permite la entrada, la respuesta sale
+sin regla explícita. Las NACLs son **stateless** y actúan a nivel de subred,
+antes de que el paquete llegue a la instancia. Se aplica una sola, como segunda
+capa independiente.
+
+**VPC → Network ACLs → Create network ACL** → Name `nacl-data` → VPC
+`snowball-vpc` → Create. Después:
+
+- **Subnet associations**: `snowball-data-a` y `snowball-data-b`.
+- **Inbound rules**: regla 100, `PostgreSQL (5432)`, source `10.0.11.0/24`,
+  Allow; regla 110, ídem con `10.0.12.0/24`. El `DENY` final va implícito.
+- **Outbound rules**: regla 100, `Custom TCP`, rango `1024–65535`, destino
+  `10.0.0.0/16`, Allow. Esta regla es necesaria justamente porque la NACL no
+  recuerda la conexión de ida.
+
+Conviene ser honesto sobre qué aporta: **no agrega seguridad frente a un
+atacante que ya comprometió `sg-app`**, pero sí frente al error humano. Si
+alguien agrega por equivocación una regla permisiva en `sg-db`, la NACL sigue
+descartando el tráfico que no venga de las subredes de aplicación.
+
+Sobre las demás subredes se deja la **NACL por defecto**, que permite todo, y es
+una decisión deliberada: duplicar ahí las reglas de los security groups solo
+agrega superficie de error de configuración sin ganancia real.
+
+---
+
+## 3. DynamoDB — tabla de telemetría
 
 Consola → **DynamoDB → Tables → Create table**:
 
@@ -48,7 +264,7 @@ Después, con la tabla creada → pestaña **Additional settings** →
 
 ---
 
-## 2. SQS — cola de lecturas + DLQ
+## 4. SQS — cola de lecturas + DLQ
 
 **Primero la DLQ** (para poder referenciarla desde la principal):
 
@@ -68,7 +284,7 @@ Después, con la tabla creada → pestaña **Additional settings** →
 
 ---
 
-## 3. SNS — tópicos de alertas
+## 5. SNS — tópicos de alertas
 
 Por cada uno de estos tres nombres: **SNS → Topics → Create topic** →
 tipo **Standard** → Name → Create:
@@ -84,9 +300,9 @@ mail que llega** (sin confirmar no se entrega nada).
 
 ---
 
-## 4. IoT Core — dispositivos, certificados y regla
+## 6. IoT Core — dispositivos, certificados y regla
 
-### 4.1 Endpoint
+### 6.1 Endpoint
 
 Es el `--endpoint` del simulador, con la forma
 `xxxxxxxxxxxxxx-ats.iot.us-east-1.amazonaws.com`. Tiene que ser la variante
@@ -105,7 +321,7 @@ mismo valor:
 - **Connect → Connect one device** → el asistente lo muestra en el primer
   paso (leerlo y salir, no hace falta completarlo).
 
-### 4.2 Política de dispositivos (una sola para todos)
+### 6.2 Política de dispositivos (una sola para todos)
 
 **IoT Core → Security → Policies → Create policy**:
 
@@ -147,7 +363,7 @@ Las *policy variables* (`${iot:Connection.Thing.ThingName}`) hacen que cada
 dispositivo solo pueda conectarse con su propio nombre y publicar en **sus**
 tópicos: es la ACL por dispositivo del diseño, sin escribir una política por unidad.
 
-### 4.3 Things + certificados (repetir por unidad: SB-001, SB-002, SB-003)
+### 6.3 Things + certificados (repetir por unidad: SB-001, SB-002, SB-003)
 
 **IoT Core → All devices → Things → Create things → Create single thing**:
 
@@ -173,7 +389,7 @@ certs/
 └── SB-003/…
 ```
 
-### 4.4 La regla de ingesta (el corazón de esta revisión)
+### 6.4 La regla de ingesta (el corazón de esta revisión)
 
 **IoT Core → Message routing → Rules → Create rule**:
 
@@ -195,7 +411,7 @@ SELECT *, topic(2) AS unit_id FROM 'snowball/+/telemetry'
 > Si al elegir LabRole la consola se queja de permisos, reintentar una vez —
 > pasa lo mismo que documenta el propio lab con los service-linked roles.
 
-### 4.5 Probar la ingesta SIN código (vale hacerlo ya)
+### 6.5 Probar la ingesta SIN código (vale hacerlo ya)
 
 **IoT Core → MQTT test client**:
 
@@ -215,47 +431,178 @@ está validada** (sección 17 del documento de arquitectura).
 
 ---
 
-## 5. RDS — PostgreSQL del dominio
+## 7. S3 — los tres buckets
 
-> Fase actual (sin la VPC del diseño todavía): lo creamos en la **default VPC**,
-> accesible solo desde tu IP. En la fase de red se recrea privado en las
-> subredes de datos, como manda el PDF (§7 y §13).
+S3 cumple tres funciones en este diseño y solo la primera tiene que ver con el
+frontend. Conviene crearlos ahora porque el *user data* del launch template
+(sección 13) descarga los artefactos de despliegue desde acá.
+
+Los nombres de bucket son globales: agregar un sufijo propio del grupo.
+
+### 7.1 `snowball-dashboard-<sufijo>` — sitio estático
+
+**S3 → Create bucket**, región us-east-1:
+
+1. **Desmarcar «Block all public access»** y confirmar.
+2. **Properties → Static website hosting → Enable**, index document `index.html`.
+3. **Permissions → Bucket policy**:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": "*",
+    "Action": "s3:GetObject",
+    "Resource": "arn:aws:s3:::snowball-dashboard-<sufijo>/*"
+  }]
+}
+```
+
+El contenido lo sube la sección 14, después de que exista el ALB (la URL de la
+API queda horneada en el build).
+
+### 7.2 `snowball-artifacts-<sufijo>` — artefactos de despliegue
+
+**Create bucket** con **todos los accesos públicos bloqueados** (el default).
+De acá bajan los bundles las instancias del ASG, usando el `LabInstanceProfile`.
+Activar **Bucket Versioning** para poder volver a un bundle anterior.
+
+### 7.3 `snowball-archive-<sufijo>` — archivo histórico y respaldos
+
+**Create bucket**, público bloqueado, versionado activado. Dos usos:
+
+- **Archivo histórico.** DynamoDB expira la telemetría a los 30 días por TTL.
+  Antes de eso, una exportación programada deja el histórico acá, comprimido y
+  particionado por unidad y fecha. Esto no es optimización de costo: SENASA y
+  ANMAT exigen poder reconstruir la traza térmica de un lote mucho después de
+  entregado, y guardar años de telemetría en la base caliente sería absurdo.
+- **Respaldos.** Volcados lógicos de RDS.
+
+Agregarle una regla de ciclo de vida: **Management → Create lifecycle rule** →
+prefijo `telemetry/` → *Transition current versions* → **Glacier Flexible
+Retrieval a los 90 días**.
+
+---
+
+## 8. Bastión
+
+Hace falta un camino de entrada a las subredes privadas, y no lo puede dar el NAT
+Gateway. El NAT es deliberadamente **unidireccional**: traduce la dirección de
+origen de los paquetes que salen y mantiene una tabla de traducción para devolver
+las respuestas; un paquete que llega desde Internet sin corresponder a una
+conexión iniciada adentro no tiene entrada en esa tabla, así que se descarta. Esa
+asimetría es su valor de seguridad, y es también la razón por la que jamás se
+podría abrir una sesión SSH «a través» del NAT.
+
+| | NAT Gateway | Bastión |
+|---|---|---|
+| Sentido | salida (*egress*) | entrada (*ingress*) |
+| Quién inicia | la instancia privada, hacia afuera | el operador, desde afuera |
+| Para qué | actualizaciones del SO, consumo de SQS, publicación en SNS, Device Shadow, cualquier API de AWS sin gateway endpoint | abrir SSH contra instancias sin IP pública: diagnosticar, desplegar, aplicar el esquema de RDS |
+
+**EC2 → Launch instance**:
+
+1. Name: `snowball-bastion` · Amazon Linux 2023 · **t3.micro** · key pair **vockey**.
+2. Network: `snowball-vpc` → Subnet **`snowball-public-a`** → **Auto-assign public IP: Enable**.
+3. Security group: elegir el existente **`sg-bastion`**.
+4. Launch.
+
+Endurecerlo, porque es el único host expuesto:
+
+- `sg-bastion` con origen restringido a la **IP fija del equipo**, nunca `0.0.0.0/0`.
+- Sin datos ni credenciales almacenados.
+- **Apagado cuando no se usa.**
+
+> **En producción esto iría con SSM Session Manager**, y conviene decirlo en la
+> defensa. Session Manager abre una sesión interactiva sin puerto 22 abierto, sin
+> par de claves y sin ningún host expuesto: el agente que corre en la instancia
+> inicia la conexión saliente hacia el servicio. Es estrictamente más seguro, y
+> el `LabInstanceProfile` suele traer los permisos. El bastión se conserva porque
+> hace legible la topología de tres capas y porque la prueba de aislamiento más
+> fuerte de la demo —intentar alcanzar RDS *desde el bastión* y fallar— necesita
+> una máquina dentro de la VPC, en subred pública, que no sea de aplicación.
+
+**Los sensores no pasan por el bastión, ni lo conocen, ni tocan la VPC.** Se
+conectan al endpoint de IoT Core con TLS mutuo presentando su certificado X.509.
+Ese es un camino de datos, automático y permanente, que ocurre por completo fuera
+de la red propia. El bastión es un camino de administración, humano y ocasional.
+
+---
+
+## 9. RDS — PostgreSQL del dominio, privada y Multi-AZ
+
+Acá vive el dominio del negocio: `clients`, `units`, `routes`, `users`,
+`device_config` (setpoint deseado y aplicado, umbrales, minutos de tolerancia) y
+`alerts` con su ciclo de vida y reconocimiento. Volumen chico y estable, pero con
+relaciones reales y necesidad de transacciones — lo contrario de la telemetría,
+que va a DynamoDB.
+
+### 9.1 DB subnet group
+
+**RDS → Subnet groups → Create DB subnet group**:
+
+1. Name: `snowball-db-subnets` · Description: cualquiera · VPC: `snowball-vpc`
+2. Availability Zones: **`us-east-1a` y `us-east-1b`**
+3. Subnets: **`snowball-data-a` y `snowball-data-b`** (y ninguna otra) → Create.
+
+### 9.2 La instancia
 
 **RDS → Create database**:
 
 1. **Standard create** → Engine: **PostgreSQL** (15.x).
-2. Templates: **Free tier / Dev-Test** → Instance: **db.t3.micro**.
+2. Templates: **Dev/Test** · **Availability and durability: Multi-AZ DB instance**.
 3. DB instance identifier: `snowball-db` · Master username: `snowball` ·
-   contraseña: elegir una y guardarla en el grupo.
-4. Storage: 20 GB gp2/gp3. **Sin** Multi-AZ por ahora (se activa la semana de la demo).
-5. Connectivity: default VPC → **Public access: Yes** (solo esta fase) →
-   VPC security group: crear `snowball-db-dev` .
+   contraseña: elegir una y guardarla en el gestor del grupo.
+4. Instance: **db.t3.micro** · Storage: **20 GB gp3**.
+5. **Connectivity**:
+   - VPC: `snowball-vpc`
+   - DB subnet group: `snowball-db-subnets`
+   - **Public access: No** ← imprescindible
+   - VPC security group: elegir el existente **`sg-db`**
 6. Additional configuration → Initial database name: `snowball` →
    **desmarcar Enhanced monitoring** (el lab no lo permite).
-7. Create database y esperar ~10 min.
+7. Create database y esperar ~10 min (Multi-AZ tarda más que single-AZ).
 
-Después: **EC2 → Security Groups → snowball-db-dev → Edit inbound rules** →
-dejar una sola regla: PostgreSQL (5432) — Source **My IP** (y agregar la IP de
-cada integrante que lo use).
+**Tres barreras independientes sobre el mismo objetivo**, y conviene poder
+enumerarlas: el **ruteo** (`rt-data` no tiene ruta por defecto), el **security
+group** (`sg-db` acepta a `sg-app` y a nadie más) y el **atributo de la
+instancia** (`publicly accessible = no`, así ni recibe un nombre DNS que resuelva
+a una dirección pública).
 
-Aplicar esquema y datos de demo desde tu máquina (endpoint en la pestaña
-*Connectivity* de la instancia):
+> **Qué resuelve Multi-AZ y qué no.** Mantiene un standby con replicación
+> síncrona en la otra zona. **No sirve para escalar lecturas** —el standby no es
+> consultable, a diferencia de una réplica de lectura— sino para conmutar de
+> forma automática si cae la zona primaria, redirigiendo el mismo nombre DNS al
+> nodo sobreviviente, con una interrupción del orden de uno a dos minutos. Es lo
+> que sostiene el objetivo de 99,9 % de disponibilidad, y de paso justifica por
+> qué las subredes de datos son dos.
+
+### 9.3 Aplicar el esquema y los datos de demo
+
+La base ya no es alcanzable desde tu máquina: hay que pasar por el bastión. Abrir
+un túnel SSH y correr `psql` contra `localhost`, así las credenciales no quedan
+en el bastión:
 
 ```bash
-psql "host=<ENDPOINT-RDS> dbname=snowball user=snowball sslmode=require" \
+# terminal 1 — túnel (endpoint en la pestaña Connectivity de la instancia)
+ssh -i labsuser.pem -L 5432:<ENDPOINT-RDS>:5432 ec2-user@<IP-BASTION>
+
+# terminal 2 — el mismo comando de siempre, contra el túnel
+psql "host=localhost dbname=snowball user=snowball sslmode=require" \
   -f infra/sql/schema.sql -f infra/sql/seed.sql
 ```
 
 ---
 
-## 6. Simulador — módulo local (tu máquina)
+## 10. Simulador — módulo local (tu máquina)
 
 El simulador **no se despliega**: es un módulo que corre localmente y genera
 la telemetría de los sensores. Se autentica ante IoT Core igual que un sensor
 real — **solo con su certificado X.509**, sin credenciales AWS ni rol IAM —
 así que puede correr desde cualquier red con salida al puerto 8883.
 
-En tu máquina, con los certificados del paso 4.3 en `certs/` (gitignoreado):
+En tu máquina, con los certificados del paso 6.3 en `certs/` (gitignoreado):
 
 ```bash
 npm install && npm run build
@@ -275,7 +622,7 @@ alarma «sin señal» de CloudWatch, fase siguiente).
 
 ---
 
-## 7. Empaquetado de los artefactos desplegables
+## 11. Empaquetado de los artefactos desplegables
 
 Los dos módulos que sí van a EC2 (procesador de alertas y API) se empaquetan
 con esbuild en **un único archivo `.js` autocontenido** — dependencias
@@ -291,122 +638,273 @@ npm run bundle
 #   packages/api/dist/api.bundle.js
 ```
 
----
-
-## 8. EC2 procesador de alertas
-
-**EC2 → Launch instance**:
-
-1. Name: `snowball-app` · Amazon Linux 2023 · **t3.micro** (t3.small en la demo) · vockey.
-2. Default VPC, SG nuevo `snowball-app`: SSH desde *My IP* + **TCP 3000 desde *My IP*** (para la API del paso 9).
-3. **Advanced details → IAM instance profile: `LabInstanceProfile`** ← imprescindible:
-   de acá salen los permisos para SQS, SNS y DynamoDB.
-4. Agregar la IP privada (o el SG) de esta instancia al inbound del SG
-   `snowball-db-dev` (puerto 5432) para que llegue a RDS.
-5. Copiar el artefacto y correr:
+Subir los bundles al bucket de artefactos: de ahí los baja el *user data* de
+cada instancia que levante el Auto Scaling Group.
 
 ```bash
-# en tu máquina
-scp -i labsuser.pem packages/alert-processor/dist/alert-processor.bundle.js \
-  ec2-user@<IP-PUBLICA>:
-
-# en la instancia
-ssh -i labsuser.pem ec2-user@<IP-PUBLICA>
-sudo dnf install -y nodejs
-
-export AWS_REGION=us-east-1
-export SQS_QUEUE_URL='<URL de snowball-readings (paso 2)>'
-export SNS_THERMAL_EXCURSION_TOPIC_ARN='<ARN del tópico (paso 3)>'
-export PGHOST='<ENDPOINT-RDS>' PGDATABASE=snowball PGUSER=snowball PGPASSWORD='<pass>'
-
-node alert-processor.bundle.js
+aws s3 cp packages/alert-processor/dist/alert-processor.bundle.js \
+  s3://snowball-artifacts-<sufijo>/
+aws s3 cp packages/api/dist/api.bundle.js \
+  s3://snowball-artifacts-<sufijo>/
 ```
-
-El proceso es **stateless**: el estado de excursión vive en DynamoDB y los
-umbrales en RDS, así que matar la instancia y levantar otra no pierde nada.
-Redesplegar = volver a hacer `scp` y reiniciar el proceso. (Cuando esto esté
-estable lo convertimos en servicio systemd; por ahora una sesión de `tmux`
-por proceso alcanza para la demo.)
 
 ---
 
-## 9. EC2 API de lectura (REST + WebSocket)
+## 12. ALB y target group
 
-La API corre **en la misma instancia** `snowball-app` como segundo proceso
-(en la fase VPC completa irá detrás del ALB). No consume la cola — esa es
-exclusiva del procesador —: lee DynamoDB y RDS, y el feed en vivo del
-WebSocket lo resuelve consultando DynamoDB solo por las unidades que los
-dashboards conectados están mirando.
+El balanceador es la única puerta de entrada al cómputo. Va antes del ASG porque
+el grupo se registra contra su *target group*.
 
-```bash
-# en tu máquina
-scp -i labsuser.pem packages/api/dist/api.bundle.js ec2-user@<IP-PUBLICA>:
+### 12.1 Target group
 
-# en la instancia (otra sesión de tmux)
-export AWS_REGION=us-east-1
-export PGHOST='<ENDPOINT-RDS>' PGDATABASE=snowball PGUSER=snowball PGPASSWORD='<pass>'
-# opcionales: PORT (3000), LIVE_POLL_MS (3000), DDB_TABLE
+**EC2 → Target Groups → Create target group**:
 
-node api.bundle.js
-```
+1. Target type: **Instances** · Name: `snowball-app-tg`
+2. Protocol **HTTP**, port **3000** · VPC: `snowball-vpc`
+3. Health checks: **HTTP**, path **`/health`** (la API ya responde
+   `{"ok":true}` ahí) → Next → **Create** sin registrar objetivos: los agrega
+   el ASG.
 
-Probar: `curl http://<IP-PUBLICA>:3000/health` → `{"ok":true}` y
-`curl http://<IP-PUBLICA>:3000/api/units`.
+### 12.2 El balanceador
+
+**EC2 → Load Balancers → Create load balancer → Application Load Balancer**:
+
+1. Name: `snowball-alb` · Scheme: **Internet-facing** · IP type: IPv4
+2. VPC: `snowball-vpc` · Mappings: marcar **`us-east-1a` → `snowball-public-a`**
+   y **`us-east-1b` → `snowball-public-b`**
+3. Security group: **`sg-alb`** (quitar el default)
+4. Listener: **HTTP : 80** → forward to **`snowball-app-tg`** → Create.
+
+> **El ALB no es una caja única.** Crea un nodo con su propia ENI en cada subred
+> que se le asigna en el *subnet mapping*, y AWS exige mínimo dos subredes en dos
+> zonas distintas. **Por eso `snowball-public-b` existe aunque no hospede
+> cómputo.**
+
+Copiar el **DNS name** del balanceador: es la URL de la API
+(`http://<dns-del-alb>`) y la que se hornea en el build del dashboard.
+
+Como el JavaScript del dashboard corre en el navegador del usuario y llama a la
+API desde otro origen, **la API tiene que devolver los encabezados CORS** del
+dominio del bucket.
 
 ---
 
-## 10. Dashboard estático en S3
+## 13. Launch template y Auto Scaling Group
 
-**S3 → Create bucket**: nombre `snowball-dashboard-<sufijo>` (los nombres de
-bucket son globales; agregar un sufijo propio), región us-east-1.
+Las dos cargas que quedan en cómputo propio son procesos de larga vida y con
+estado, y por eso son EC2 y no Lambda: la **API con WebSockets** mantiene la
+conexión abierta mientras el usuario mira el dashboard, y el **procesador de
+alertas** es un consumidor de SQS en bucle permanente. Cada instancia corre las
+dos como servicios del sistema.
 
-1. **Desmarcar «Block all public access»** y confirmar.
-2. **Properties → Static website hosting → Enable**, index document `index.html`.
-3. **Permissions → Bucket policy**:
+**Un ASG no puede convivir con un despliegue manual por `scp`**: cuando el grupo
+reemplaza una instancia, la nueva tiene que levantar sirviendo, sin que nadie se
+conecte a configurarla. De ahí el launch template con *user data*.
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Principal": "*",
-    "Action": "s3:GetObject",
-    "Resource": "arn:aws:s3:::snowball-dashboard-<sufijo>/*"
-  }]
-}
-```
+### 13.1 Launch template
 
-4. Compilar apuntando a la API y subir (el valor queda horneado en el build):
+**EC2 → Launch Templates → Create launch template**:
+
+1. Name: `snowball-app-lt`
+2. AMI: **Amazon Linux 2023** · Instance type: **t3.small**
+3. Key pair: **vockey** (para poder entrar por el bastión a diagnosticar)
+4. Network settings: **no elegir subred acá** (la define el ASG) ·
+   Security group: **`sg-app`**
+5. Storage: **20 GB gp3**
+6. **Advanced details → IAM instance profile: `LabInstanceProfile`** ←
+   imprescindible: de acá salen los permisos para SQS, SNS, DynamoDB y S3.
+7. **Advanced details → User data**:
 
 ```bash
-VITE_API_BASE=http://<IP-PUBLICA-EC2>:3000 npm run build -w @snowball/dashboard
+#!/bin/bash
+set -euxo pipefail
+dnf install -y nodejs
+
+BUCKET=snowball-artifacts-<sufijo>
+install -d /opt/snowball
+aws s3 cp "s3://$BUCKET/api.bundle.js"             /opt/snowball/
+aws s3 cp "s3://$BUCKET/alert-processor.bundle.js" /opt/snowball/
+
+cat >/etc/snowball.env <<'ENV'
+AWS_REGION=us-east-1
+SQS_QUEUE_URL=<URL de snowball-readings (sección 4)>
+SNS_THERMAL_EXCURSION_TOPIC_ARN=<ARN del tópico (sección 5)>
+PGHOST=<ENDPOINT-RDS>
+PGDATABASE=snowball
+PGUSER=snowball
+PGPASSWORD=<pass>
+PORT=3000
+ENV
+chmod 600 /etc/snowball.env
+
+for svc in api alert-processor; do
+  case "$svc" in
+    api)             bundle=api.bundle.js ;;
+    alert-processor) bundle=alert-processor.bundle.js ;;
+  esac
+  cat >"/etc/systemd/system/snowball-$svc.service" <<UNIT
+[Unit]
+Description=Snowball $svc
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/snowball.env
+ExecStart=/usr/bin/node /opt/snowball/$bundle
+Restart=always
+RestartSec=5
+User=ec2-user
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+done
+
+systemctl daemon-reload
+systemctl enable --now snowball-api snowball-alert-processor
+```
+
+`Restart=always` es lo que reemplaza al `tmux` de la fase anterior: si un proceso
+muere, systemd lo levanta, y si la instancia muere, la levanta el ASG.
+
+### 13.2 Auto Scaling Group
+
+**EC2 → Auto Scaling Groups → Create Auto Scaling group**:
+
+1. Name: `snowball-app-asg` · Launch template: `snowball-app-lt`
+2. VPC: `snowball-vpc` · Subnets: **`snowball-app-a` y `snowball-app-b`**
+3. **Attach to an existing load balancer** → target group `snowball-app-tg`
+4. **Health checks: activar «Turn on Elastic Load Balancing health checks»**
+5. Group size: **Desired 2 · Minimum 2 · Maximum 4**
+6. Create.
+
+Dos instancias como piso, una por zona. Son de tipo *burstable*: acumulan
+créditos de CPU mientras el tráfico es plano y los gastan durante la ráfaga, que
+es el perfil exacto de esta carga. `t3.small` en lugar de `t3.micro` porque el
+gigabyte extra de memoria evita que la API y el procesador compitan por RAM.
+
+### 13.3 Por qué esto es legítimo
+
+El almacenamiento de bloque se reduce al volumen raíz **EBS gp3 de 20 GB** de
+cada instancia, con el sistema y la aplicación. Las instancias son
+**deliberadamente descartables**: todo estado durable vive en RDS, DynamoDB, S3 o
+en la propia cola SQS. El estado de excursión en curso está en DynamoDB y los
+umbrales en RDS, así que matar una instancia y levantar otra no pierde nada. Eso
+es lo que vuelve legítimo el escalado automático.
+
+**No hay EFS.** Su única razón de existir en la versión previa era el material que
+ambos brokers Mosquitto debían compartir —la CA, los certificados emitidos y las
+ACL de tópicos—, porque un dispositivo podía aterrizar en cualquiera de los dos.
+IoT Core absorbe exactamente ese problema: el registro de dispositivos, la
+emisión de certificados y las políticas de tópicos son estado del servicio
+gestionado, no archivos en un filesystem.
+
+### 13.4 Redesplegar y diagnosticar
+
+**Redesplegar** = subir los bundles nuevos a S3 (sección 11) y lanzar un
+**Instance refresh** en el ASG. No hay `scp` a una IP pública: las instancias no
+tienen una.
+
+**Diagnosticar**, pasando por el bastión:
+
+```bash
+ssh -i labsuser.pem -J ec2-user@<IP-BASTION> ec2-user@<IP-PRIVADA-INSTANCIA>
+sudo journalctl -u snowball-api -f
+sudo journalctl -u snowball-alert-processor -f
+```
+
+Probar la API a través del balanceador:
+
+```bash
+curl http://<DNS-DEL-ALB>/health      # {"ok":true}
+curl http://<DNS-DEL-ALB>/api/units
+```
+
+---
+
+## 14. Dashboard — build y publicación
+
+El bucket ya existe (sección 7.1). Ahora que hay un ALB, se puede hornear su DNS
+en el build:
+
+```bash
+VITE_API_BASE=http://<DNS-DEL-ALB> npm run build -w @snowball/dashboard
 aws s3 sync packages/dashboard/dist/ s3://snowball-dashboard-<sufijo>/ --delete
 ```
 
-5. Abrir la **website endpoint** del bucket (Properties → Static website
-   hosting). Cambió la IP de la EC2 → recompilar y volver a sincronizar.
+Abrir la **website endpoint** del bucket (Properties → Static website hosting).
+A diferencia de la fase anterior, el DNS del ALB **no cambia** cuando se
+reemplazan las instancias, así que no hay que recompilar por eso.
 
-> El dashboard es 100 % estático (HTML+JS+CSS): S3 solo sirve archivos; toda
-> la data sale de la API. Sin CloudFront en el Learner Lab, el endpoint del
-> sitio es HTTP — coherente con la API, también HTTP en esta fase.
+> **«Estático» califica a los archivos, no a lo que ve el usuario.** S3 entrega
+> siempre el mismo `index.html`, el mismo bundle y el mismo CSS, byte por byte,
+> sin ejecutar nada del lado del servidor. Después ese JavaScript corre en el
+> navegador del usuario, y es él quien consulta la API por HTTP a través del ALB
+> y abre el WebSocket que recibe las lecturas en tiempo real. El hosting es
+> estático; la aplicación es dinámica. Sin CloudFront en el Learner Lab, el
+> endpoint del sitio es HTTP — coherente con el listener del ALB.
 
 ---
 
-## 11. Checklist de verificación end-to-end
+## 15. Checklist de verificación end-to-end
+
+**Red y aislamiento**
+
+- [ ] Las seis subredes existen con sus CIDR y zonas correctas
+- [ ] `rt-data` tiene **una sola** entrada (`10.0.0.0/16 → local`)
+- [ ] Las instancias del ASG **no tienen IP pública**
+- [ ] RDS muestra `Publicly accessible: No`
+- [ ] `psql` directo al endpoint de RDS desde tu máquina: **falla** (no hay ruta de retorno)
+- [ ] `nc -zv <endpoint-rds> 5432` **desde el bastión**: **falla también** — es la
+      prueba más elocuente, porque muestra que la segmentación es por rol y no
+      «adentro contra afuera»: `sg-db` acepta a `sg-app` y a nadie más, ni
+      siquiera a otra máquina de la propia VPC
+- [ ] `nc -zv <endpoint-rds> 5432` desde una instancia de `sg-app`: **conecta**
+
+**Ingesta**
 
 - [ ] MQTT test client muestra mensajes llegando a `snowball/+/telemetry`
 - [ ] DynamoDB acumula ítems nuevos por unidad (Explore items, ordenados por `ts`)
 - [ ] La cola `snowball-readings` drena (mensajes *in flight* mientras el procesador corre)
-- [ ] El procesador loguea `ok -> deviated` al minuto de la excursión y `-> alerted` al superar la tolerancia
+- [ ] `snowball-readings-dlq` sigue vacía (si tiene mensajes, mirar qué payload rompió el parseo)
+
+**Alertas**
+
+- [ ] `journalctl -u snowball-alert-processor` loguea `ok -> deviated` al minuto
+      de la excursión y `-> alerted` al superar la tolerancia
 - [ ] Llega **un solo mail** por excursión al correo suscripto
 - [ ] La alerta queda en RDS: `SELECT * FROM alerts ORDER BY emitted_at DESC;`
-- [ ] `snowball-readings-dlq` sigue vacía (si tiene mensajes, mirar qué payload rompió el parseo)
-- [ ] `GET /api/units` devuelve las unidades con su última lectura
-- [ ] El dashboard (website endpoint de S3) muestra las tarjetas actualizándose en vivo y la alerta en la tabla
 
-## 12. Al terminar cada sesión (presupuesto)
+**Cómputo y publicación**
 
-1. **Detener** (no borrar) la EC2 y la RDS. *Ojo:* AWS re-enciende una RDS
-   detenida a los 7 días; si nadie la va a usar en la semana, sacarle un snapshot y borrarla.
-2. DynamoDB / SQS / SNS / IoT Core / S3 quedan como están: centavos o nada en reposo.
-3. Cerrar la sesión del lab con **End Lab** — y revisar el budget en la pantalla del curso.
+- [ ] El target group `snowball-app-tg` muestra **dos objetivos `healthy`**, uno por zona
+- [ ] `curl http://<DNS-DEL-ALB>/api/units` devuelve las unidades con su última lectura
+- [ ] El dashboard (website endpoint de S3) muestra las tarjetas actualizándose
+      en vivo y la alerta en la tabla
+- [ ] Terminar una instancia a mano: el ASG levanta otra y vuelve a `healthy`
+      sin intervención
+
+---
+
+## 16. Al terminar cada sesión (presupuesto)
+
+Lo que factura por hora, en orden de costo:
+
+1. **NAT Gateway** (~USD 32/mes si queda encendido). **Borrarlo** al terminar y
+   recrearlo al empezar: son dos minutos y es el ahorro más grande. Al recrearlo
+   hay que volver a apuntar las rutas `0.0.0.0/0` de `rt-app-a` y `rt-app-b`.
+2. **RDS Multi-AZ** — **detenerla** (no borrarla). *Ojo:* AWS re-enciende una RDS
+   detenida a los 7 días; si nadie la va a usar en la semana, sacarle un
+   snapshot y borrarla.
+3. **ALB** (~USD 16/mes). Borrarlo también si la pausa es larga; recrearlo es
+   rápido, pero cambia su DNS name y hay que **recompilar el dashboard**.
+4. **Las EC2 del ASG** — poner el ASG en **Desired 0 / Minimum 0**. Es más
+   prolijo que terminar instancias a mano, que el grupo repondría.
+5. **El bastión** — detenerlo.
+
+DynamoDB / SQS / SNS / IoT Core / S3 quedan como están: centavos o nada en
+reposo. La VPC, las subredes, las tablas de ruteo, los security groups y los
+gateway endpoints **no cuestan nada**: no hace falta borrarlos nunca.
+
+Cerrar la sesión del lab con **End Lab** — y revisar el budget en la pantalla del
+curso.
