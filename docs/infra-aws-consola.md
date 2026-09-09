@@ -801,27 +801,38 @@ conecte a configurarla. De ahí el launch template con *user data*.
 5. Storage: **20 GB gp3**
 6. **Advanced details → IAM instance profile: `LabInstanceProfile`** ←
    imprescindible: de acá salen los permisos para SQS, SNS, DynamoDB y S3.
-7. **Advanced details → User data**:
+7. Antes de pegar el *user data*, reemplazar **todos** los valores entre
+    `<...>` por los valores reales de esta instalación. El bloque siguiente es
+    una plantilla: **no pegarlo sin editar**.
+    - `<sufijo>`: sufijo exacto de `snowball-artifacts-<sufijo>`.
+    - `<URL-SQS>`: URL completa de `snowball-readings` (sección 4).
+    - `<ARN-SNS>`: ARN completo de `snowball-thermal-excursion` (sección 5).
+    - `<ENDPOINT-RDS>`: endpoint DNS de `snowball-db`, sin `https://` ni puerto
+       (sección 9.2).
+    - `<PASSWORD-RDS>`: contraseña del usuario master `snowball`.
+    - `<JWT-SECRET>`: clave aleatoria generada para esta instalación, por
+       ejemplo con `openssl rand -base64 32` (sección 9.4).
+8. **Advanced details → User data**: pegar el bloque ya editado:
 
 ```bash
 #!/bin/bash
 set -euxo pipefail
 dnf install -y nodejs
 
-BUCKET=snowball-artifacts-<sufijo>
+BUCKET=snowball-artifacts-<sufijo> # reemplazar <sufijo>
 install -d /opt/snowball
 aws s3 cp "s3://$BUCKET/api.bundle.js"             /opt/snowball/
 aws s3 cp "s3://$BUCKET/alert-processor.bundle.js" /opt/snowball/
 
 cat >/etc/snowball.env <<'ENV'
 AWS_REGION=us-east-1
-SQS_QUEUE_URL=<URL de snowball-readings (sección 4)>
-SNS_THERMAL_EXCURSION_TOPIC_ARN=<ARN del tópico (sección 5)>
+SQS_QUEUE_URL=<URL-SQS>
+SNS_THERMAL_EXCURSION_TOPIC_ARN=<ARN-SNS>
 PGHOST=<ENDPOINT-RDS>
 PGDATABASE=snowball
 PGUSER=snowball
-PGPASSWORD=<pass>
-JWT_SECRET=<clave generada para esta instalación>
+PGPASSWORD=<PASSWORD-RDS>
+JWT_SECRET=<JWT-SECRET>
 PORT=3000
 ENV
 chmod 600 /etc/snowball.env
@@ -852,6 +863,11 @@ done
 systemctl daemon-reload
 systemctl enable --now snowball-api snowball-alert-processor
 ```
+
+No dejar los marcadores `<sufijo>`, `<URL-SQS>`, `<ARN-SNS>`,
+`<ENDPOINT-RDS>`, `<PASSWORD-RDS>` ni `<JWT-SECRET>` en el bloque final. La
+contraseña de RDS y el JWT quedan en `/etc/snowball.env` de cada instancia; no
+se deben commitear ni subir al bucket de artefactos.
 
 `Restart=always` es lo que reemplaza al `tmux` de la fase anterior: si un proceso
 muere, systemd lo levanta, y si la instancia muere, la levanta el ASG.
@@ -890,9 +906,37 @@ gestionado, no archivos en un filesystem.
 
 ### 13.4 Redesplegar y diagnosticar
 
-**Redesplegar** = subir los bundles nuevos a S3 (sección 11) y lanzar un
-**Instance refresh** en el ASG. No hay `scp` a una IP pública: las instancias no
-tienen una.
+**Redesplegar** significa actualizar los artefactos y reemplazar gradualmente
+las instancias del ASG. No hay `scp` a una IP pública: las instancias no tienen
+una.
+
+1. En tu máquina, generar los artefactos nuevos:
+
+   ```bash
+   npm run bundle
+   ```
+
+2. Subir al bucket `snowball-artifacts-<sufijo>` **los dos archivos que descarga
+   el *user data***:
+
+   ```bash
+   aws s3 cp packages/api/dist/api.bundle.js \
+     s3://snowball-artifacts-<sufijo>/api.bundle.js
+   aws s3 cp packages/alert-processor/dist/alert-processor.bundle.js \
+     s3://snowball-artifacts-<sufijo>/alert-processor.bundle.js
+   ```
+
+   Reemplazar `<sufijo>` por el sufijo real del bucket. Si se cambió el *user
+   data* o la AMI, crear una **nueva versión** del launch template antes del
+   refresh; para un cambio normal de los bundles, el mismo launch template los
+   descargará al arrancar cada instancia nueva.
+
+3. Abrir **EC2 → Auto Scaling Groups → `snowball-app-asg` → Instance refresh**.
+4. Elegir **Start instance refresh**, revisar la configuración y confirmar.
+   El ASG terminará y recreará las instancias gradualmente según la política
+   de reemplazo, manteniendo capacidad disponible.
+5. Esperar a que el target group muestre nuevamente dos objetivos **healthy**.
+   Recién entonces validar `/health`, el login y el dashboard.
 
 **Diagnosticar**, pasando por el bastión:
 
@@ -911,25 +955,120 @@ curl http://<DNS-DEL-ALB>/api/units
 
 ### 13.5 Lambda diaria de archivo
 
-**Lambda → Create function** → *Author from scratch*:
+Esta función no corre en el ASG ni necesita una EC2 propia. Lee DynamoDB y
+escribe S3 usando su **execution role**. El rol debe permitir como mínimo:
 
-1. Name: `snowball-telemetry-export` · Runtime **Node.js 20.x** ·
-   Architecture x86_64 · role existente **LabRole**.
-2. **Code → Upload from → .zip file**: subir
-   `packages/telemetry-export/dist/telemetry-export.zip`.
-3. Handler: `index.handler` · Timeout: **5 min** · Memory: **512 MB**.
-4. Environment variable: `ARCHIVE_BUCKET=snowball-archive-<sufijo>`.
-   Opcionales: `DDB_TABLE`, `DDB_STATE_TABLE`.
+- `dynamodb:Scan` sobre `snowball-unit-state`
+- `dynamodb:Query` sobre `snowball-telemetry`
+- `s3:PutObject` sobre `arn:aws:s3:::snowball-archive-<sufijo>/telemetry/*`
+- escribir logs en CloudWatch Logs
 
-La función escanea `snowball-unit-state`, consulta el histórico del día
-anterior en `snowball-telemetry` y escribe un objeto gzip NDJSON por unidad en
-`telemetry/aaaa/mm/dd/<unidad>.ndjson.gz`. Para probarla manualmente, usar un
-evento como `{"date":"2026-09-06"}`. La respuesta debe terminar con
-`"failed":[]`.
+En AWS Academy, usar **LabRole** si aparece como rol seleccionable y ya tiene
+esos permisos. Si no aparece o no tiene acceso a esos recursos, revisar la
+política del rol antes de continuar: la función puede crearse, pero fallará al
+leer DynamoDB o escribir S3.
 
-**EventBridge → Rules → Create rule**: Name `snowball-telemetry-export` ·
-Schedule · cron `cron(15 0 * * ? *)` · target Lambda
-`snowball-telemetry-export`. La consola agrega el permiso de invocación.
+#### 13.5.1 Crear y configurar la función
+
+1. Abrir **AWS Console → Services → Lambda → Functions**.
+2. Elegir **Create function**.
+3. En **Author from scratch**, completar:
+   - **Function name:** `snowball-telemetry-export`
+   - **Runtime:** `Node.js 22.x` (Node 20 está deprecado en AWS Lambda)
+   - **Architecture:** `x86_64`
+4. En **Permissions → Change default execution role**, elegir **Use an
+   existing role** y seleccionar `LabRole`. No crear otro rol si el lab no lo
+   permite.
+5. Elegir **Create function**.
+6. Dentro de la función, abrir la pestaña **Code**.
+7. En el panel **Code source**, elegir **Upload from → .zip file**.
+8. Seleccionar el archivo local
+   `packages/telemetry-export/dist/telemetry-export.zip`, elegir **Save** y
+   esperar a que termine la actualización.
+9. En **Runtime settings → Edit**, verificar:
+   - **Handler:** `index.handler`
+   - **Runtime:** `Node.js 22.x`
+10. Ir a **Configuration → General configuration → Edit** y establecer:
+    - **Memory:** `512 MB`
+    - **Timeout:** `5 min`
+    - Guardar con **Save**.
+11. Ir a **Configuration → Environment variables → Edit → Add environment
+    variable** y agregar:
+    - **Key:** `ARCHIVE_BUCKET`
+    - **Value:** `snowball-archive-<sufijo>`
+    - Opcionales: `DDB_TABLE` y `DDB_STATE_TABLE`, solo si se usan nombres
+      distintos de `snowball-telemetry` y `snowball-unit-state`.
+    - Elegir **Save**.
+
+No subir `JWT_SECRET`, `PGPASSWORD` ni otras credenciales a esta Lambda: no las
+necesita. Lambda cifra sus variables de entorno en reposo, pero el bucket de
+archivo debe seguir privado.
+
+#### 13.5.2 Probar la función manualmente
+
+1. En la página de la función, abrir la pestaña **Test**.
+2. Elegir **Create new event** o **Create event**.
+3. Event name: `export-yesterday-test`.
+4. Usar este JSON para exportar una fecha concreta:
+
+```json
+{"date":"2026-09-06"}
+```
+
+5. Elegir **Save** y después **Test**.
+6. La respuesta debe contener `"failed":[]`.
+7. Ir a **S3 → snowball-archive-<sufijo> → telemetry/aaaa/mm/dd/** y
+   verificar que exista un `.ndjson.gz` por unidad que haya reportado ese día.
+8. Si falla, abrir **Monitor → View CloudWatch logs** en Lambda y revisar el
+   log group `/aws/lambda/snowball-telemetry-export`.
+
+#### 13.5.3 Crear el schedule diario
+
+Esto se crea en **EventBridge Scheduler**, no en **EventBridge → Rules**.
+
+1. Abrir **AWS Console → Services → EventBridge → Scheduler → Schedules**.
+   También se puede abrir directamente **EventBridge Scheduler → Schedules**
+   desde el buscador de servicios.
+2. Elegir **Create schedule**.
+3. En **Specify schedule detail** completar:
+   - **Schedule name:** `snowball-telemetry-export`
+   - **Schedule group:** `default`
+   - **Occurrence:** `Recurring schedule`
+   - **Schedule type:** `Cron-based schedule`
+   - **Cron expression:** `cron(15 0 * * ? *)`
+   - **Timezone:** `UTC`
+   - **Flexible time window:** **Off**
+4. Elegir **Next**.
+5. En **Select target**:
+   - Seleccionar **AWS Lambda → Invoke** como target templated.
+   - Elegir la función `snowball-telemetry-export`.
+   - Para la primera configuración, usar como input:
+
+```json
+{}
+```
+
+   La función interpreta un evento sin `date` como “el día anterior en UTC”.
+   El backfill con `{"date":"YYYY-MM-DD"}` se hace desde el botón Test de
+   Lambda o desde el CLI local, no desde el schedule diario.
+6. Elegir **Next**.
+7. En **Settings**:
+   - **Enable schedule:** activado.
+   - **Action after schedule completion:** `NONE`.
+   - Configurar retry si se desea; el `ExportError` de la función hace que una
+     ejecución fallida se reporte como fallo al scheduler.
+8. En **Permissions**, seleccionar **Use existing role** solo si existe un rol
+   cuyo trust policy permita `scheduler.amazonaws.com` y cuya policy permita
+   `lambda:InvokeFunction` sobre `snowball-telemetry-export`. Si el laboratorio
+   permite que la consola cree el rol, elegir **Create new role for this
+   schedule** y aceptar el rol generado.
+9. Elegir **Next**, revisar el resumen y elegir **Create schedule**.
+10. Volver a **EventBridge → Scheduler → Schedules**, abrir
+    `snowball-telemetry-export` y verificar que el estado sea **Enabled**.
+
+El schedule invocará la Lambda todos los días a las 00:15 UTC. No crear una
+regla equivalente en **EventBridge → Rules**, porque sería un segundo
+disparador duplicado y no es el recurso que usa este diseño.
 
 ---
 

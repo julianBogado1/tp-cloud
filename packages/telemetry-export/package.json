@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
-    "bundle": "esbuild src/handler.ts --bundle --platform=node --target=node20 --external:@aws-sdk/* --outfile=dist/index.js",
+    "bundle": "esbuild src/handler.ts --bundle --platform=node --target=node22 --external:@aws-sdk/* --outfile=dist/index.js",
     "zip": "cd dist && (zip -j telemetry-export.zip index.js || python -m zipfile -c telemetry-export.zip index.js)"
   },
   "dependencies": {
