@@ -619,7 +619,7 @@ ssh -i labsuser.pem -J ec2-user@<IP-BASTION> \
    -L 5432:<ENDPOINT-RDS>:5432 ec2-user@<IP-PRIVADA-INSTANCIA-APP>
 
 # terminal 2 — el mismo comando de siempre, contra el túnel
-psql "host=localhost dbname=snowball user=snowball sslmode=require" \
+PGCLIENTENCODING=UTF8 psql "host=localhost dbname=snowball user=snowball sslmode=require" \
   -f infra/sql/schema.sql -f infra/sql/seed.sql
 ```
 
@@ -1080,6 +1080,20 @@ en el build:
 ```bash
 VITE_API_BASE=http://<DNS-DEL-ALB> npm run build -w @snowball/dashboard
 aws s3 sync packages/dashboard/dist/ s3://snowball-dashboard-<sufijo>/ --delete
+
+# Si el navegador muestra acentos como "Ã±", publicar los archivos de texto
+# con charset explícito (reemplazar <sufijo> por el valor real):
+aws s3 cp packages/dashboard/dist/index.html \
+   s3://snowball-dashboard-<sufijo>/index.html \
+   --content-type 'text/html; charset=utf-8'
+for file in packages/dashboard/dist/assets/*.js; do
+   aws s3 cp "$file" "s3://snowball-dashboard-<sufijo>/assets/$(basename "$file")" \
+      --content-type 'text/javascript; charset=utf-8'
+done
+for file in packages/dashboard/dist/assets/*.css; do
+   aws s3 cp "$file" "s3://snowball-dashboard-<sufijo>/assets/$(basename "$file")" \
+      --content-type 'text/css; charset=utf-8'
+done
 ```
 
 Abrir la **website endpoint** del bucket (Properties → Static website hosting).

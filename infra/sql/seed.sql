@@ -1,6 +1,8 @@
 -- Demo data: 2 clients, 1 route, 3 units with thresholds, 1 user per role.
 -- Idempotent: safe to run more than once.
 
+SET client_encoding = 'UTF8';
+
 INSERT INTO clients (id, name, email) VALUES
   (1, 'Frigorífico Sur SA', 'ops@frigorificosur.example'),
   (2, 'Farma Andina SRL', 'logistica@farmaandina.example')
@@ -17,6 +19,17 @@ INSERT INTO units (unit_id, client_id, route_id, description) VALUES
   ('SB-002', 1, 1, 'Camión frigorífico — lácteos'),
   ('SB-003', 2, 1, 'Furgón — vacunas')
 ON CONFLICT (unit_id) DO NOTHING;
+
+-- Repair existing demo rows too: the original DO NOTHING kept mojibake data
+-- if the seed had previously been applied with the wrong client encoding.
+UPDATE clients SET name = 'Frigorífico Sur SA' WHERE id = 1;
+UPDATE routes SET name = 'AMBA — Córdoba', destination = 'Córdoba' WHERE id = 1;
+UPDATE units SET description = CASE unit_id
+  WHEN 'SB-001' THEN 'Camión frigorífico — carne'
+  WHEN 'SB-002' THEN 'Camión frigorífico — lácteos'
+  WHEN 'SB-003' THEN 'Furgón — vacunas'
+END
+WHERE unit_id IN ('SB-001', 'SB-002', 'SB-003');
 
 INSERT INTO device_config (unit_id, setpoint_c, temp_min_c, temp_max_c, tolerance_min) VALUES
   ('SB-001', -18, -25, -15, 5),

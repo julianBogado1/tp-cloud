@@ -49,6 +49,7 @@ h2 { font-size: 16px; color: var(--muted); margin: 32px 0 12px; }
 .status-excursion .temp { color: var(--excursion); }
 .status-stale .temp { color: var(--stale); }
 .meta { display: flex; gap: 12px; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+.sensor-data { display: flex; flex-wrap: wrap; gap: 12px; color: var(--text); font-size: 12px; margin-bottom: 8px; }
 .description { color: var(--muted); font-size: 12px; margin-top: 8px; }
 
 .badge {

@@ -31,6 +31,16 @@ export function UnitCard({ unit, history, nowMs, selected, onSelect }: Props) {
         {last && <span>hace {formatAgo(last.ts, nowMs)}</span>}
         {last && <span>bat {Math.round(last.battery)}%</span>}
       </div>
+      {last && (
+        <div className="sensor-data">
+          <span>hum {typeof last.humidity_pct === 'number' ? `${last.humidity_pct.toFixed(1)}%` : '—'}</span>
+          <span>
+            GPS {typeof last.lat === 'number' && typeof last.lon === 'number'
+              ? `${last.lat.toFixed(4)}, ${last.lon.toFixed(4)}`
+              : '—'}
+          </span>
+        </div>
+      )}
       <Sparkline values={history.map((r) => r.temp_c)} min={unit.temp_min_c} max={unit.temp_max_c} />
       {unit.description && <div className="description">{unit.description}</div>}
     </button>
