@@ -4,7 +4,7 @@ import type { TelemetryQuery } from './query';
 
 /**
  * Everything the routers need from storage, behind one interface so tests
- * inject fakes. Every RDS read that touches `units` takes the caller's Scope
+ * inject fakes. Every unit read takes the caller's Scope
  * (see auth/scope.ts); DynamoDB reads are only reached after the unit was
  * confirmed in scope.
  */

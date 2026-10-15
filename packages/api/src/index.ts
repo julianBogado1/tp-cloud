@@ -16,7 +16,7 @@ import { createUsersRouter } from './users-routes';
 
 /**
  * Snowball API: REST + WebSocket for the static dashboard. Stateless —
- * everything served comes from DynamoDB/RDS; the live feed's lastSeen map is
+ * everything served comes from DynamoDB; the live feed's lastSeen map is
  * a disposable cursor and the login rate limiter is per instance.
  *
  * Environment variables: see .env.example.

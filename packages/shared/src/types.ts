@@ -31,7 +31,7 @@ export interface IngestedReading extends Telemetry {
   expires_at: number;
 }
 
-/** Row of the `device_config` table in RDS */
+/** Row of the `device-config` DynamoDB table */
 export interface ThresholdConfig {
   unit_id: string;
   temp_min_c: number;

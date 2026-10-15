@@ -133,7 +133,7 @@ function Dashboard({ session, onLogout }: { session: Session; onLogout: () => vo
             onSelect={(id) => setSelected((prev) => (prev === id ? null : id))}
           />
         ))}
-        {units.length === 0 && <p className="empty">No hay unidades activas en RDS.</p>}
+        {units.length === 0 && <p className="empty">No hay unidades activas en DynamoDB.</p>}
       </section>
 
       {selectedUnit && (

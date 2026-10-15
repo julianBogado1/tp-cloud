@@ -2,6 +2,8 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+docs/MIGRACION_TERRAFORM.md
+
 # credenciales y certificados de dispositivos — NUNCA commitear
 certs/
 *.pem

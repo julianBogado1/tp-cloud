@@ -13,13 +13,12 @@ import { closePool, getThreshold, insertAlert } from './thresholds';
 
 /**
  * Alert processor: consumes the queue fed by the IoT Core rule, evaluates
- * each reading against the RDS thresholds and notifies through SNS.
+ * each reading against the DynamoDB thresholds and notifies through SNS.
  *
  * Environment variables:
  *   SQS_QUEUE_URL                    (required)
  *   SNS_THERMAL_EXCURSION_TOPIC_ARN  (required)
  *   DDB_TABLE                        (default snowball-telemetry)
- *   PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD for RDS
  *
  * A failing message is not deleted: SQS retries it and, past maxReceiveCount,
  * moves it to the DLQ. A message for a unit without device_config is deleted
@@ -39,7 +38,7 @@ async function processMessage(message: Message): Promise<void> {
 
   const config = await getThreshold(reading.unit_id);
   if (!config) {
-    console.warn(`[${reading.unit_id}] no device_config in RDS — reading discarded`);
+    console.warn(`[${reading.unit_id}] no device_config in DynamoDB — reading discarded`);
     return;
   }
 

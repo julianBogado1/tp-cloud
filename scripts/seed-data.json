@@ -1,0 +1,24 @@
+{
+  "routes": [
+    { "id": 1, "name": "AMBA — Córdoba", "origin": "Buenos Aires", "destination": "Córdoba" }
+  ],
+  "clients": [
+    { "id": 1, "name": "Frigorífico Sur SA", "email": "ops@frigorificosur.example" },
+    { "id": 2, "name": "Farma Andina SRL", "email": "logistica@farmaandina.example" }
+  ],
+  "units": [
+    { "unit_id": "SB-001", "client_id": 1, "route_id": 1, "description": "Camión frigorífico — carne", "active": true },
+    { "unit_id": "SB-002", "client_id": 1, "route_id": 1, "description": "Camión frigorífico — lácteos", "active": true },
+    { "unit_id": "SB-003", "client_id": 2, "route_id": 1, "description": "Furgón — vacunas", "active": true }
+  ],
+  "device-config": [
+    { "unit_id": "SB-001", "setpoint_c": -18, "temp_min_c": -25, "temp_max_c": -15, "tolerance_min": 5 },
+    { "unit_id": "SB-002", "setpoint_c": -18, "temp_min_c": -25, "temp_max_c": -15, "tolerance_min": 5 },
+    { "unit_id": "SB-003", "setpoint_c": 5, "temp_min_c": 2, "temp_max_c": 8, "tolerance_min": 1 }
+  ],
+  "users": [
+    { "id": 1, "email": "operator@snowball.example", "email_lower": "operator@snowball.example", "password_hash": "$2b$10$Dmrj/MMAaLlkv1lhszJHM.19Dnl4zh4bUflz0ucOO0qdSVBhCEoWS", "role": "operator", "client_id": 1, "active": true },
+    { "id": 2, "email": "supervisor@snowball.example", "email_lower": "supervisor@snowball.example", "password_hash": "$2b$10$9/oEgoC0iL3QFKLxfuYN0uHlRpdj7GTY4ZUUSnyQbf.LLEodW2mFW", "role": "supervisor", "client_id": 1, "active": true },
+    { "id": 3, "email": "admin@snowball.example", "email_lower": "admin@snowball.example", "password_hash": "$2b$10$sLxBcv1cR/gMGCxUWIVGUeabhS1zURIPm0dec0NUZ/Ljjnq9rbC3y", "role": "admin", "client_id": null, "active": true }
+  ]
+}
