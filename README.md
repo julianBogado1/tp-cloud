@@ -12,11 +12,11 @@ simulator (local) ──MQTT/TLS──▶ IoT Core ──regla──▶ DynamoDB
               ├─regla──▶ DynamoDB snowball-unit-state (última lectura por unidad)
               └─regla──▶ SQS ──▶ alert-processor (EC2) ──▶ SNS (mail/SMS)
                                                                     │
-                                                              RDS (umbrales, alertas)
+                                                              DynamoDB (dominio, umbrales, alertas)
 ARCHIVO
 EventBridge (diario 00:15 UTC) ──▶ telemetry-export (Lambda) ──▶ S3 telemetry/aaaa/mm/dd/*.ndjson.gz ──▶ Glacier
 LECTURA (humanos)
-dashboard (estático, S3) ──HTTP+JWT/WS──▶ api (EC2) ──▶ DynamoDB + RDS + Device Shadow
+dashboard (estático, S3) ──HTTP+JWT/WS──▶ api (EC2) ──▶ DynamoDB + Device Shadow
 ```
 
 Las dos rutas no se tocan: la cola es exclusiva del `alert-processor`; la
@@ -31,11 +31,11 @@ dashboards conectados están mirando. La última lectura sale de
 |---|---|---|
 | `packages/shared` | Tipos del dominio + nombres de recursos (única fuente de verdad; se _bundlea_ dentro de cada artefacto) | — |
 | `packages/simulator` | Unidades de frío simuladas: cliente MQTT con certificado X.509, escenarios de excursión/silencio, Device Shadow | **local** |
-| `packages/alert-processor` | Consumidor de SQS: máquina de estados de excursión, umbrales desde RDS, alertas a SNS + RDS. Stateless (estado en DynamoDB) | EC2, artefacto de un solo archivo |
+| `packages/alert-processor` | Consumidor de SQS: máquina de estados de excursión, umbrales y alertas en DynamoDB, notificaciones SNS. Stateless | EC2, artefacto de un solo archivo |
 | `packages/api` | REST + WebSocket para el dashboard: login con JWT propio (`/auth`), roles operador/supervisor/admin con alcance por cliente, lectura de unidades/alertas/telemetría, acknowledgement de alertas, configuración remota vía Device Shadow y ABM de usuarios. Stateless | EC2, artefacto de un solo archivo |
 | `packages/telemetry-export` | Lambda diaria: copia el histórico del día anterior de DynamoDB a S3 (`.ndjson.gz` por unidad) para el archivo en Glacier. También corre local (`npm run export`) | Lambda (EventBridge cron) |
 | `packages/dashboard` | Frontend React (Vite): tarjetas por unidad con feed en vivo, historial y alertas. Compila a archivos 100 % estáticos | S3 static website |
-| `infra/sql/` | `schema.sql` y `seed.sql` de la base de dominio (RDS PostgreSQL) | — |
+| `infra/sql/` | SQL histórico conservado; la ejecución actual usa `scripts/seed-data.json` en DynamoDB | — |
 | `docs/infra-aws-consola.md` | **Guía paso a paso** para crear toda la infraestructura desde la consola AWS y desplegar cada módulo | — |
 
 ## Uso
@@ -49,10 +49,10 @@ npm run build
 npm run simulator -- --endpoint <xxx-ats.iot.us-east-1.amazonaws.com> \
   --units SB-001,SB-002 --interval 5 --excursion SB-001@60
 
-# procesador de alertas (necesita SQS_QUEUE_URL, SNS_THERMAL_EXCURSION_TOPIC_ARN y PG*)
+# procesador de alertas (necesita SQS_QUEUE_URL, SNS_THERMAL_EXCURSION_TOPIC_ARN y DDB_*)
 npm run alert-processor
 
-# API (necesita JWT_SECRET y PG*; opcionales IOT_ENDPOINT, CORS_ORIGIN, PORT, LIVE_POLL_MS, DDB_TABLE — ver packages/api/.env.example)
+# API (necesita JWT_SECRET y DDB_*; opcionales IOT_ENDPOINT, CORS_ORIGIN, PORT, LIVE_POLL_MS — ver packages/api/.env.example)
 npm run api
 
 # exportación a S3 a mano (necesita ARCHIVE_BUCKET; --date opcional, default ayer UTC)
@@ -68,7 +68,7 @@ npm run dashboard
   (mTLS) y la política `snowball-device-policy`, que con `${iot:Connection.Thing.ThingName}`
   la limita a sus tópicos. Alta por consola (guía §4.3) o con
   `scripts/provision-unit.sh SB-004`.
-- **Personas**: `POST /auth/login` con email + contraseña (bcrypt en RDS) devuelve un JWT
+- **Personas**: `POST /auth/login` con email + contraseña (bcrypt en DynamoDB) devuelve un JWT
   HS256 de 8 h. Roles `operator < supervisor < admin`; los no-admin solo ven las unidades
   de su `client_id`. Usuarios demo en `infra/sql/seed.sql`
   (`operator123` / `supervisor123` / `admin123`); nuevo hash con
@@ -96,5 +96,25 @@ end-to-end están en `docs/infra-aws-consola.md`.
 
 ## Pendiente (fases siguientes)
 
-- ALB delante de la API y VPC de tres capas según el PDF (§7)
 - Alarma CloudWatch de «sin señal» y alertas de batería baja (`snowball-low-battery`)
+
+## Terraform
+
+La infraestructura vive en `terraform/`. Crear primero el bucket de estado con
+state local y después inicializar la raíz con backend S3 y `use_lockfile = true`:
+
+```bash
+terraform -chdir=terraform/bootstrap init
+terraform -chdir=terraform/bootstrap apply -var-file=terraform.tfvars
+terraform -chdir=terraform init \
+  -backend-config="bucket=<state-bucket>" \
+  -backend-config="key=snowball/terraform.tfstate" \
+  -backend-config="region=us-east-1"
+terraform -chdir=terraform validate
+terraform -chdir=terraform apply -var-file=terraform.tfvars
+```
+
+Ejecutar `npm run bundle` antes de `apply`; Terraform espera los bundles de API y
+alert-processor y el ZIP de exportación en `dist/`. Los secretos se pasan por
+variables locales o CI, nunca se commitean. Después del apply,
+`scripts/export-certs.sh` escribe los certificados IoT desde los outputs sensibles.
