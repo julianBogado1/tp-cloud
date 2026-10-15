@@ -5,13 +5,13 @@ output "alb_dns_name" {
   value = module.compute.alb_dns_name
 }
 output "artifact_bucket" {
-  value = aws_s3_bucket.artifacts.id
+  value = local.bucket_names.artifacts
 }
 output "dashboard_bucket" {
-  value = module.dashboard_bucket.s3_bucket_id
+  value = local.bucket_names.dashboard
 }
 output "archive_bucket" {
-  value = aws_s3_bucket.archive.id
+  value = local.bucket_names.archive
 }
 output "iot_endpoint" {
   value = module.iot_ingest.iot_endpoint

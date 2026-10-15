@@ -14,12 +14,27 @@ fi
 certificates="$(terraform -chdir="${TF_DIR}" output -json iot_certificates)"
 private_keys="$(terraform -chdir="${TF_DIR}" output -json iot_private_keys)"
 
-for unit in $(jq -r 'keys[]' <<<"${certificates}"); do
-  mkdir -p "${CERT_DIR}/${unit}"
-  jq -r --arg unit "${unit}" '.[$unit]' <<<"${certificates}" > "${CERT_DIR}/${unit}/certificate.pem.crt"
-  jq -r --arg unit "${unit}" '.[$unit]' <<<"${private_keys}" > "${CERT_DIR}/${unit}/private.pem.key"
-  chmod 600 "${CERT_DIR}/${unit}/private.pem.key"
-done
+# Usa Node (ya es prerrequisito del proyecto) en vez de jq, que no viene en Git Bash.
+# Rutas relativas a la raíz del repo para evitar problemas de rutas entre Git Bash y Windows.
+cd "${ROOT_DIR}"
+CERTS_JSON="${certificates}" KEYS_JSON="${private_keys}" node -e '
+const fs = require("fs");
+const path = require("path");
+const certs = JSON.parse(process.env.CERTS_JSON);
+const keys = JSON.parse(process.env.KEYS_JSON);
+const units = Object.keys(certs);
+if (units.length === 0) {
+  console.error("No IoT certificates found in Terraform outputs.");
+  process.exit(1);
+}
+for (const unit of units) {
+  const dir = path.join("certs", unit);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "certificate.pem.crt"), certs[unit]);
+  fs.writeFileSync(path.join(dir, "private.pem.key"), keys[unit], { mode: 0o600 });
+  console.log("Exported " + unit);
+}
+'
 
 if [[ -f "${CERT_DIR}/AmazonRootCA1.pem" ]]; then
   echo "${CERT_DIR}/AmazonRootCA1.pem already exists; leaving it unchanged." >&2

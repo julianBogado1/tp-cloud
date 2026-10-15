@@ -100,12 +100,11 @@ end-to-end están en `docs/infra-aws-consola.md`.
 
 ## Terraform
 
-La infraestructura vive en `terraform/`. Crear primero el bucket de estado con
-state local y después inicializar la raíz con backend S3 y `use_lockfile = true`:
+La infraestructura vive en `terraform/`. En Learner Lab crear primero los cuatro
+buckets con AWS CLI, porque el SCP bloquea la lectura de Object Lock del provider:
 
 ```bash
-terraform -chdir=terraform/bootstrap init
-terraform -chdir=terraform/bootstrap apply -var-file=terraform.tfvars
+scripts/bootstrap-buckets.sh grupo-01 snowball-tfstate-grupo-01
 terraform -chdir=terraform init \
   -backend-config="bucket=<state-bucket>" \
   -backend-config="key=snowball/terraform.tfstate" \
@@ -113,6 +112,12 @@ terraform -chdir=terraform init \
 terraform -chdir=terraform validate
 terraform -chdir=terraform apply -var-file=terraform.tfvars
 ```
+
+El backend usa el lockfile nativo de S3 (`use_lockfile = true`). Terraform sólo
+administra configuraciones standalone de buckets ya creados, nunca el recurso
+`aws_s3_bucket` principal. El script es dueño exclusivo del bucket de state;
+Terraform es dueño de versionado, cifrado, Public Access Block, website, policy
+y lifecycle de dashboard, artifacts y archive.
 
 Ejecutar `npm run bundle` antes de `apply`; Terraform espera los bundles de API y
 alert-processor y el ZIP de exportación en `dist/`. Los secretos se pasan por

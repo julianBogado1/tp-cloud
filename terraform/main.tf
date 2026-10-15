@@ -6,6 +6,18 @@ module "network" {
   bastion_allowed_cidr = var.bastion_allowed_cidr
 }
 
+module "vpc_external" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "5.21.0"
+
+  create_vpc      = false
+  name            = var.project
+  cidr            = var.vpc_cidr
+  azs             = var.availability_zones
+  public_subnets  = []
+  private_subnets = []
+}
+
 module "data" {
   source      = "./modules/data"
   table_names = local.names
@@ -18,49 +30,44 @@ module "messaging" {
   subscription_email = var.sns_subscription_email
 }
 
-module "dashboard_bucket" {
-  source                  = "terraform-aws-modules/s3-bucket/aws"
-  version                 = "4.2.2"
-  bucket                  = local.bucket_names.dashboard
-  website                 = { index_document = "index.html" }
-  block_public_acls       = false
-  block_public_policy     = false
-  ignore_public_acls      = false
-  restrict_public_buckets = false
-}
-resource "aws_s3_bucket" "artifacts" {
-  bucket        = local.bucket_names.artifacts
-  force_destroy = false
-}
 resource "aws_s3_bucket_versioning" "artifacts" {
-  bucket = aws_s3_bucket.artifacts.id
+  bucket = local.bucket_names.artifacts
   versioning_configuration { status = "Enabled" }
 }
+
 resource "aws_s3_bucket_public_access_block" "artifacts" {
-  bucket                  = aws_s3_bucket.artifacts.id
+  bucket                  = local.bucket_names.artifacts
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
 }
-resource "aws_s3_bucket" "archive" {
-  bucket        = local.bucket_names.archive
-  force_destroy = var.archive_prevent_destroy ? false : true
-  lifecycle { prevent_destroy = true }
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "private" {
+  for_each = toset([local.bucket_names.artifacts, local.bucket_names.archive])
+  bucket   = each.value
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
 }
+
 resource "aws_s3_bucket_versioning" "archive" {
-  bucket = aws_s3_bucket.archive.id
+  bucket = local.bucket_names.archive
   versioning_configuration { status = "Enabled" }
 }
+
 resource "aws_s3_bucket_public_access_block" "archive" {
-  bucket                  = aws_s3_bucket.archive.id
+  bucket                  = local.bucket_names.archive
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
 }
+
 resource "aws_s3_bucket_lifecycle_configuration" "archive" {
-  bucket = aws_s3_bucket.archive.id
+  bucket = local.bucket_names.archive
   rule {
     id     = "telemetry-to-glacier"
     status = "Enabled"
@@ -70,6 +77,42 @@ resource "aws_s3_bucket_lifecycle_configuration" "archive" {
       storage_class = "GLACIER"
     }
   }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "dashboard" {
+  bucket = local.bucket_names.dashboard
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "dashboard" {
+  bucket                  = local.bucket_names.dashboard
+  block_public_acls       = false
+  block_public_policy     = false
+  ignore_public_acls      = false
+  restrict_public_buckets = false
+}
+
+resource "aws_s3_bucket_website_configuration" "dashboard" {
+  bucket = local.bucket_names.dashboard
+  index_document { suffix = "index.html" }
+}
+
+resource "aws_s3_bucket_policy" "dashboard" {
+  bucket = local.bucket_names.dashboard
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = "*"
+      Action    = "s3:GetObject"
+      Resource  = "arn:aws:s3:::${local.bucket_names.dashboard}/*"
+    }]
+  })
+  depends_on = [aws_s3_bucket_website_configuration.dashboard]
 }
 
 module "iot_ingest" {
@@ -94,7 +137,7 @@ module "compute" {
   subnet_ids           = module.network.app_subnet_ids
   public_subnet_ids    = module.network.public_subnet_ids
   vpc_id               = module.network.vpc_id
-  artifact_bucket      = aws_s3_bucket.artifacts.id
+  artifact_bucket      = local.bucket_names.artifacts
   api_bundle_path      = var.api_bundle_path
   alert_bundle_path    = var.alert_bundle_path
   names                = local.names
@@ -109,16 +152,10 @@ module "export" {
   source              = "./modules/export"
   function_name       = "snowball-telemetry-export"
   lambda_zip_path     = var.lambda_zip_path
-  archive_bucket      = aws_s3_bucket.archive.id
+  archive_bucket      = local.bucket_names.archive
   telemetry_table     = local.names.telemetry_table
   state_table         = local.names.state_table
   lab_role_arn        = data.aws_iam_role.lab.arn
   schedule_expression = var.schedule_expression
-  depends_on          = [module.data, aws_s3_bucket.archive]
-}
-
-resource "aws_s3_bucket_policy" "dashboard" {
-  bucket     = module.dashboard_bucket.s3_bucket_id
-  policy     = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Principal = "*", Action = "s3:GetObject", Resource = "${module.dashboard_bucket.s3_bucket_arn}/*" }] })
-  depends_on = [module.dashboard_bucket]
+  depends_on          = [module.data, aws_s3_bucket_lifecycle_configuration.archive]
 }

@@ -66,7 +66,7 @@ resource "aws_route_table_association" "app" {
 }
 data "aws_region" "current" {}
 resource "aws_vpc_endpoint" "gateway" {
-  for_each          = { s3 = "com.amazonaws.${data.aws_region.current.name}.s3", dynamodb = "com.amazonaws.${data.aws_region.current.name}.dynamodb" }
+  for_each          = { s3 = "com.amazonaws.${data.aws_region.current.region}.s3", dynamodb = "com.amazonaws.${data.aws_region.current.region}.dynamodb" }
   vpc_id            = aws_vpc.this.id
   service_name      = each.value
   vpc_endpoint_type = "Gateway"

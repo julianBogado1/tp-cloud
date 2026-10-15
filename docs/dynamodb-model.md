@@ -20,4 +20,4 @@ Las tablas `snowball-telemetry` (`unit_id`, `ts`) y `snowball-unit-state` (`unit
 
 ## Seed
 
-`scripts/seed-data.json` contiene los mismos clientes, unidades, configuraciones y usuarios demo que el seed SQL. Los usuarios llevan hashes bcrypt precalculados. El cargador de infraestructura debe usar los objetos y respetar las claves indicadas arriba; no se incluyen contraseñas en claro.
+`scripts/seed-data.json` contiene los mismos clientes, unidades, configuraciones y usuarios demo que el seed SQL. Cada entrada tiene una clave estable `key` y un `item` en DynamoDB JSON explícito: strings usan `S`, números `N`, booleanos `BOOL` y valores nulos `NULL`; listas/mapas anidados usarían `L`/`M`. Terraform pasa `item` sin inferir ni convertir tipos. Los usuarios llevan hashes bcrypt precalculados; no se incluyen contraseñas en claro.

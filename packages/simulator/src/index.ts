@@ -116,6 +116,10 @@ function startUnit(unitId: string, scenario: Scenario): void {
   });
 
   client.on('error', (err) => console.error(`[${unitId}] MQTT error:`, err.message));
+  client.on('close', () => console.log(`[${unitId}] connection closed`));
+  client.on('offline', () => console.log(`[${unitId}] offline`));
+  client.on('reconnect', () => console.log(`[${unitId}] reconnecting...`));
+  client.on('disconnect', (packet) => console.log(`[${unitId}] server disconnect:`, JSON.stringify(packet)));
 
   if (scenario.excursionAfter !== undefined) {
     setTimeout(() => {

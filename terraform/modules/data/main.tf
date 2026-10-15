@@ -10,10 +10,10 @@ locals {
   }
   seed = jsondecode(file(var.seed_path))
   seed_items = merge(
-    { for item in local.seed.clients : "clients-${item.id}" => { table = "clients", item = item } },
-    { for item in local.seed.units : "units-${item.unit_id}" => { table = "units", item = item } },
-    { for item in local.seed["device-config"] : "config-${item.unit_id}" => { table = "config", item = item } },
-    { for item in local.seed.users : "users-${item.id}" => { table = "users", item = item } }
+    { for item in local.seed.clients : item.key => { table = "clients", item = item.item } },
+    { for item in local.seed.units : item.key => { table = "units", item = item.item } },
+    { for item in local.seed["device-config"] : item.key => { table = "config", item = item.item } },
+    { for item in local.seed.users : item.key => { table = "users", item = item.item } }
   )
 }
 resource "aws_dynamodb_table" "this" {
@@ -72,6 +72,6 @@ resource "aws_dynamodb_table_item" "seed" {
   table_name = aws_dynamodb_table.this[each.value.table].name
   hash_key   = local.definitions[each.value.table].hash
   range_key  = lookup(local.definitions[each.value.table], "range", null)
-  item       = jsonencode({ for key, value in each.value.item : key => value == null ? { NULL = true } : can(tonumber(tostring(value))) && !contains(["true", "false"], lower(tostring(value))) ? { N = tostring(value) } : contains(["true", "false"], lower(tostring(value))) ? { BOOL = value } : { S = tostring(value) } })
+  item       = jsonencode(each.value.item)
   depends_on = [aws_dynamodb_table.this]
 }

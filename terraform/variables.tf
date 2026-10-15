@@ -71,10 +71,6 @@ variable "lambda_zip_path" {
   type    = string
   default = "../packages/telemetry-export/dist/telemetry-export.zip"
 }
-variable "archive_prevent_destroy" {
-  type    = bool
-  default = true
-}
 variable "seed_data_path" {
   type    = string
   default = "../scripts/seed-data.json"

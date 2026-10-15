@@ -136,7 +136,7 @@ resource "aws_launch_template" "app" {
     name = var.lab_instance_profile
   }
   user_data = base64encode(templatefile("${path.module}/user-data.sh.tftpl", {
-    region            = data.aws_region.current.name
+    region            = data.aws_region.current.region
     artifact_bucket   = var.artifact_bucket
     queue_url         = var.queue_url
     thermal_topic_arn = var.thermal_topic_arn
