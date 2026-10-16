@@ -1,0 +1,86 @@
+name: Terraform setup
+description: >
+  Verifica secrets y credenciales del Learner Lab, compila los bundles,
+  instala Terraform, crea los buckets (idempotente) e inicializa el backend.
+  Las credenciales y las TF_VAR_* llegan por el env del job.
+
+inputs:
+  strict:
+    description: "'true' falla si faltan secrets/variables; 'false' omite el resto con un warning."
+    default: "false"
+
+outputs:
+  ready:
+    description: "'true' si hay credenciales y variables completas y el setup se ejecutó."
+    value: ${{ steps.gate.outputs.ready }}
+
+runs:
+  using: composite
+  steps:
+    - name: Verificar secrets y variables
+      id: gate
+      shell: bash
+      env:
+        STRICT: ${{ inputs.strict }}
+      run: |
+        missing=()
+        for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
+                 TF_VAR_jwt_secret TF_VAR_bucket_suffix TF_VAR_state_bucket_name \
+                 TF_VAR_key_name TF_VAR_bastion_allowed_cidr TF_VAR_sns_subscription_email; do
+          [ -n "${!v}" ] || missing+=("$v")
+        done
+        if [ "${#missing[@]}" -gt 0 ]; then
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          if [ "$STRICT" = "true" ]; then
+            echo "::error title=Faltan secrets o variables::${missing[*]}"
+            exit 1
+          fi
+          echo "::warning title=Plan omitido::Faltan secrets o variables (${missing[*]}). Ver README."
+        else
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Verificar credenciales de AWS
+      if: steps.gate.outputs.ready == 'true'
+      shell: bash
+      run: |
+        if ! aws sts get-caller-identity > /dev/null 2>&1; then
+          echo "::error title=Credenciales vencidas::Las credenciales del Learner Lab vencieron. Actualizá los 3 secrets de AWS y re-ejecutá el job."
+          exit 1
+        fi
+
+    - name: Node
+      if: steps.gate.outputs.ready == 'true'
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: npm
+
+    - name: Compilar bundles (API, alert-processor, Lambda)
+      if: steps.gate.outputs.ready == 'true'
+      shell: bash
+      run: |
+        npm ci
+        npm run bundle
+
+    - name: Terraform
+      if: steps.gate.outputs.ready == 'true'
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.10.5
+        terraform_wrapper: false
+
+    - name: Crear buckets (idempotente)
+      if: steps.gate.outputs.ready == 'true'
+      shell: bash
+      run: bash scripts/bootstrap-buckets.sh "$TF_VAR_bucket_suffix" "$TF_VAR_state_bucket_name"
+
+    - name: terraform init
+      if: steps.gate.outputs.ready == 'true'
+      shell: bash
+      working-directory: terraform
+      run: |
+        terraform init -input=false \
+          -backend-config="bucket=${TF_VAR_state_bucket_name}" \
+          -backend-config="key=snowball/terraform.tfstate" \
+          -backend-config="region=${AWS_REGION}"
