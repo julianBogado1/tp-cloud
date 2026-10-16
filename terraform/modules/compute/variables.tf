@@ -7,7 +7,9 @@ variable "ami_id" {
 }
 variable "key_name" { type = string }
 variable "enable_bastion" { type = bool }
-variable "bastion_allowed_cidr" { type = string }
+variable "alb_security_group_id" { type = string }
+variable "app_security_group_id" { type = string }
+variable "bastion_security_group_id" { type = string }
 variable "lab_instance_profile" { type = string }
 variable "subnet_ids" { type = list(string) }
 variable "public_subnet_ids" { type = list(string) }

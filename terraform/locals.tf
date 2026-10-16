@@ -19,7 +19,7 @@ locals {
     signal_topic    = "snowball-no-signal"
     iot_rule        = "snowball_telemetry"
   }
-  units = toset(["SB-001", "SB-002", "SB-003"])
+  units = toset(var.unit_ids)
   bucket_names = {
     dashboard = "snowball-dashboard-${var.bucket_suffix}"
     artifacts = "snowball-artifacts-${var.bucket_suffix}"

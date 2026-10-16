@@ -28,77 +28,6 @@ resource "aws_s3_object" "alert" {
   source_hash  = filemd5(var.alert_bundle_path)
   content_type = "application/javascript"
 }
-resource "aws_security_group" "alb" {
-  name        = "snowball-compute-alb"
-  description = "ALB to app"
-  vpc_id      = var.vpc_id
-}
-resource "aws_security_group_rule" "alb_in" {
-  type              = "ingress"
-  security_group_id = aws_security_group.alb.id
-  protocol          = "tcp"
-  from_port         = 80
-  to_port           = 80
-  cidr_blocks       = ["0.0.0.0/0"]
-}
-resource "aws_security_group_rule" "alb_out" {
-  type                     = "egress"
-  security_group_id        = aws_security_group.alb.id
-  protocol                 = "tcp"
-  from_port                = 3000
-  to_port                  = 3000
-  source_security_group_id = aws_security_group.app.id
-}
-resource "aws_security_group" "app" {
-  name        = "snowball-compute-app"
-  description = "App instances"
-  vpc_id      = var.vpc_id
-}
-resource "aws_security_group_rule" "app_in" {
-  type                     = "ingress"
-  security_group_id        = aws_security_group.app.id
-  protocol                 = "tcp"
-  from_port                = 3000
-  to_port                  = 3000
-  source_security_group_id = aws_security_group.alb.id
-}
-resource "aws_security_group_rule" "app_out" {
-  type              = "egress"
-  security_group_id = aws_security_group.app.id
-  protocol          = "-1"
-  from_port         = 0
-  to_port           = 0
-  cidr_blocks       = ["0.0.0.0/0"]
-}
-resource "aws_security_group" "bastion" {
-  name        = "snowball-compute-bastion"
-  description = "Bastion to app"
-  vpc_id      = var.vpc_id
-}
-resource "aws_security_group_rule" "bastion_in" {
-  type              = "ingress"
-  security_group_id = aws_security_group.bastion.id
-  protocol          = "tcp"
-  from_port         = 22
-  to_port           = 22
-  cidr_blocks       = [var.bastion_allowed_cidr]
-}
-resource "aws_security_group_rule" "bastion_out" {
-  type                     = "egress"
-  security_group_id        = aws_security_group.bastion.id
-  protocol                 = "tcp"
-  from_port                = 22
-  to_port                  = 22
-  source_security_group_id = aws_security_group.app.id
-}
-resource "aws_security_group_rule" "app_ssh" {
-  type                     = "ingress"
-  security_group_id        = aws_security_group.app.id
-  protocol                 = "tcp"
-  from_port                = 22
-  to_port                  = 22
-  source_security_group_id = aws_security_group.bastion.id
-}
 resource "aws_lb_target_group" "app" {
   name     = "snowball-app-tg"
   port     = 3000
@@ -114,7 +43,7 @@ resource "aws_lb" "app" {
   name               = "snowball-alb"
   load_balancer_type = "application"
   internal           = false
-  security_groups    = [aws_security_group.alb.id]
+  security_groups    = [var.alb_security_group_id]
   subnets            = var.public_subnet_ids
 }
 resource "aws_lb_listener" "http" {
@@ -131,7 +60,7 @@ resource "aws_launch_template" "app" {
   image_id               = local.ami
   instance_type          = var.instance_type
   key_name               = var.key_name
-  vpc_security_group_ids = [aws_security_group.app.id]
+  vpc_security_group_ids = [var.app_security_group_id]
   iam_instance_profile {
     name = var.lab_instance_profile
   }
@@ -173,7 +102,7 @@ resource "aws_instance" "bastion" {
   instance_type               = "t3.micro"
   key_name                    = var.key_name
   subnet_id                   = var.public_subnet_ids[0]
-  vpc_security_group_ids      = [aws_security_group.bastion.id]
+  vpc_security_group_ids      = [var.bastion_security_group_id]
   associate_public_ip_address = true
   tags                        = { Name = "snowball-bastion" }
 }

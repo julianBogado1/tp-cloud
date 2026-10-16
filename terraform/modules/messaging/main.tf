@@ -18,3 +18,24 @@ resource "aws_sns_topic_subscription" "thermal_email" {
   protocol  = "email"
   endpoint  = var.subscription_email
 }
+
+# External registry module: fleet-level "no signal" alarm. If the readings queue
+# receives nothing for 15 minutes (or CloudWatch has no datapoints at all) the
+# alarm publishes to the no-signal SNS topic.
+module "no_signal_alarm" {
+  source  = "terraform-aws-modules/cloudwatch/aws//modules/metric-alarm"
+  version = "~> 5.0"
+
+  alarm_name          = format("%s-alarm", var.names.signal_topic)
+  alarm_description   = "No telemetry reached the readings queue in the last 15 minutes."
+  namespace           = "AWS/SQS"
+  metric_name         = "NumberOfMessagesSent"
+  dimensions          = { QueueName = aws_sqs_queue.readings.name }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 3
+  threshold           = 1
+  comparison_operator = "LessThanThreshold"
+  treat_missing_data  = "breaching"
+  alarm_actions       = [aws_sns_topic.topics["signal"].arn]
+}

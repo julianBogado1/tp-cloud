@@ -65,7 +65,6 @@ resource "aws_dynamodb_table" "this" {
   }
   point_in_time_recovery { enabled = true }
   server_side_encryption { enabled = true }
-  lifecycle { prevent_destroy = true }
 }
 resource "aws_dynamodb_table_item" "seed" {
   for_each   = local.seed_items

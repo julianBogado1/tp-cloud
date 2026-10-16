@@ -79,3 +79,8 @@ variable "schedule_expression" {
   type    = string
   default = "cron(15 0 * * ? *)"
 }
+variable "unit_ids" {
+  type        = list(string)
+  description = "Cold-chain units (IoT things + certificates) to provision."
+  default     = ["SB-001", "SB-002", "SB-003"]
+}

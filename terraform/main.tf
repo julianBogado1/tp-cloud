@@ -6,18 +6,6 @@ module "network" {
   bastion_allowed_cidr = var.bastion_allowed_cidr
 }
 
-module "vpc_external" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "5.21.0"
-
-  create_vpc      = false
-  name            = var.project
-  cidr            = var.vpc_cidr
-  azs             = var.availability_zones
-  public_subnets  = []
-  private_subnets = []
-}
-
 module "data" {
   source      = "./modules/data"
   table_names = local.names
@@ -126,26 +114,28 @@ module "iot_ingest" {
 }
 
 module "compute" {
-  source               = "./modules/compute"
-  project              = var.project
-  instance_type        = var.instance_type
-  ami_id               = var.ami_id
-  key_name             = var.key_name
-  enable_bastion       = var.enable_bastion
-  bastion_allowed_cidr = var.bastion_allowed_cidr
-  lab_instance_profile = data.aws_iam_instance_profile.lab.name
-  subnet_ids           = module.network.app_subnet_ids
-  public_subnet_ids    = module.network.public_subnet_ids
-  vpc_id               = module.network.vpc_id
-  artifact_bucket      = local.bucket_names.artifacts
-  api_bundle_path      = var.api_bundle_path
-  alert_bundle_path    = var.alert_bundle_path
-  names                = local.names
-  queue_url            = module.messaging.queue_url
-  thermal_topic_arn    = module.messaging.thermal_topic_arn
-  jwt_secret           = var.jwt_secret
-  table_names          = module.data.table_names
-  depends_on           = [module.data, module.messaging]
+  source                    = "./modules/compute"
+  project                   = var.project
+  instance_type             = var.instance_type
+  ami_id                    = var.ami_id
+  key_name                  = var.key_name
+  enable_bastion            = var.enable_bastion
+  alb_security_group_id     = module.network.alb_security_group_id
+  app_security_group_id     = module.network.app_security_group_id
+  bastion_security_group_id = module.network.bastion_security_group_id
+  lab_instance_profile      = data.aws_iam_instance_profile.lab.name
+  subnet_ids                = module.network.app_subnet_ids
+  public_subnet_ids         = module.network.public_subnet_ids
+  vpc_id                    = module.network.vpc_id
+  artifact_bucket           = local.bucket_names.artifacts
+  api_bundle_path           = var.api_bundle_path
+  alert_bundle_path         = var.alert_bundle_path
+  names                     = local.names
+  queue_url                 = module.messaging.queue_url
+  thermal_topic_arn         = module.messaging.thermal_topic_arn
+  jwt_secret                = var.jwt_secret
+  table_names               = module.data.table_names
+  depends_on                = [module.data, module.messaging]
 }
 
 module "export" {
