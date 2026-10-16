@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import mqtt, { type MqttClient } from 'mqtt';
 import { telemetryTopic } from '@snowball/shared';
@@ -48,7 +48,7 @@ if (!endpoint) {
 
 const intervalMs = Number(values.interval) * 1000;
 const setpoint = Number(values.setpoint);
-const certsDir = values.certs!;
+const certsDir = resolve(process.env.INIT_CWD ?? process.cwd(), values.certs!);
 
 function parseScenarios(entries: string[]): Map<string, number> {
   const map = new Map<string, number>();
