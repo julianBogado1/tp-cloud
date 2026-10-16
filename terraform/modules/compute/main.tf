@@ -77,6 +77,7 @@ resource "aws_launch_template" "app" {
     units_table       = var.table_names.units
     alerts_table      = var.table_names.alerts
     config_table      = var.table_names.config
+    iot_endpoint      = var.iot_endpoint
   }))
   lifecycle {
     create_before_destroy = true

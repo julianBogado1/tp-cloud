@@ -137,6 +137,7 @@ async function updateConfig(unitId: string, patch: ConfigPatch): Promise<Thresho
 async function listUsers(): Promise<UserRow[]> { const result = await ddb.send(new ScanCommand({ TableName: tables.users })); return (result.Items ?? []).map((item) => publicUser(item as Record<string, unknown>)).sort((a, b) => a.id - b.id); }
 async function findUserById(id: number): Promise<UserRow | undefined> { const item = (await ddb.send(new GetCommand({ TableName: tables.users, Key: { id } }))).Item; return item ? publicUser(item) : undefined; }
 async function createUser(input: NewUser): Promise<UserRow> {
+    if (await findUserByEmail(input.email)) throw new DuplicateEmailError(input.email);
   const id = Date.now(); const item = { id, ...input, active: true, email_lower: input.email.toLowerCase() };
   try { await ddb.send(new PutCommand({ TableName: tables.users, Item: item, ConditionExpression: 'attribute_not_exists(id)' })); return publicUser(item); } catch (error) { if ((error as { name?: string }).name === 'ConditionalCheckFailedException') throw new DuplicateEmailError(input.email); throw error; }
 }

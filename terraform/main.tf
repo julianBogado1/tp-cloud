@@ -136,6 +136,7 @@ module "compute" {
   jwt_secret                = var.jwt_secret
   table_names               = module.data.table_names
   depends_on                = [module.data, module.messaging]
+  iot_endpoint  = module.iot_ingest.iot_endpoint
 }
 
 module "export" {
