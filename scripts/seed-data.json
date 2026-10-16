@@ -1,0 +1,133 @@
+{
+  "routes": [
+    {
+      "key": "routes-1",
+      "item": {
+        "id": { "N": "1" },
+        "name": { "S": "AMBA — Córdoba" },
+        "origin": { "S": "Buenos Aires" },
+        "destination": { "S": "Córdoba" }
+      }
+    }
+  ],
+  "clients": [
+    {
+      "key": "clients-1",
+      "item": {
+        "id": { "N": "1" },
+        "name": { "S": "Frigorífico Sur SA" },
+        "email": { "S": "ops@frigorificosur.example" }
+      }
+    },
+    {
+      "key": "clients-2",
+      "item": {
+        "id": { "N": "2" },
+        "name": { "S": "Farma Andina SRL" },
+        "email": { "S": "logistica@farmaandina.example" }
+      }
+    }
+  ],
+  "units": [
+    {
+      "key": "units-SB-001",
+      "item": {
+        "unit_id": { "S": "SB-001" },
+        "client_id": { "N": "1" },
+        "route_id": { "N": "1" },
+        "description": { "S": "Camión frigorífico — carne" },
+        "active": { "BOOL": true }
+      }
+    },
+    {
+      "key": "units-SB-002",
+      "item": {
+        "unit_id": { "S": "SB-002" },
+        "client_id": { "N": "1" },
+        "route_id": { "N": "1" },
+        "description": { "S": "Camión frigorífico — lácteos" },
+        "active": { "BOOL": true }
+      }
+    },
+    {
+      "key": "units-SB-003",
+      "item": {
+        "unit_id": { "S": "SB-003" },
+        "client_id": { "N": "2" },
+        "route_id": { "N": "1" },
+        "description": { "S": "Furgón — vacunas" },
+        "active": { "BOOL": true }
+      }
+    }
+  ],
+  "device-config": [
+    {
+      "key": "config-SB-001",
+      "item": {
+        "unit_id": { "S": "SB-001" },
+        "setpoint_c": { "N": "-18" },
+        "temp_min_c": { "N": "-25" },
+        "temp_max_c": { "N": "-15" },
+        "tolerance_min": { "N": "5" }
+      }
+    },
+    {
+      "key": "config-SB-002",
+      "item": {
+        "unit_id": { "S": "SB-002" },
+        "setpoint_c": { "N": "-18" },
+        "temp_min_c": { "N": "-25" },
+        "temp_max_c": { "N": "-15" },
+        "tolerance_min": { "N": "5" }
+      }
+    },
+    {
+      "key": "config-SB-003",
+      "item": {
+        "unit_id": { "S": "SB-003" },
+        "setpoint_c": { "N": "5" },
+        "temp_min_c": { "N": "2" },
+        "temp_max_c": { "N": "8" },
+        "tolerance_min": { "N": "1" }
+      }
+    }
+  ],
+  "users": [
+    {
+      "key": "users-1",
+      "item": {
+        "id": { "N": "1" },
+        "email": { "S": "operator@snowball.example" },
+        "email_lower": { "S": "operator@snowball.example" },
+        "password_hash": { "S": "$2b$10$Dmrj/MMAaLlkv1lhszJHM.19Dnl4zh4bUflz0ucOO0qdSVBhCEoWS" },
+        "role": { "S": "operator" },
+        "client_id": { "N": "1" },
+        "active": { "BOOL": true }
+      }
+    },
+    {
+      "key": "users-2",
+      "item": {
+        "id": { "N": "2" },
+        "email": { "S": "supervisor@snowball.example" },
+        "email_lower": { "S": "supervisor@snowball.example" },
+        "password_hash": { "S": "$2b$10$9/oEgoC0iL3QFKLxfuYN0uHlRpdj7GTY4ZUUSnyQbf.LLEodW2mFW" },
+        "role": { "S": "supervisor" },
+        "client_id": { "N": "1" },
+        "active": { "BOOL": true }
+      }
+    },
+    {
+      "key": "users-3",
+      "item": {
+        "id": { "N": "3" },
+        "email": { "S": "admin@snowball.example" },
+        "email_lower": { "S": "admin@snowball.example" },
+        "password_hash": { "S": "$2b$10$sLxBcv1cR/gMGCxUWIVGUeabhS1zURIPm0dec0NUZ/Ljjnq9rbC3y" },
+        "role": { "S": "admin" },
+        "client_id": { "NULL": true },
+        "active": { "BOOL": true }
+      }
+    }
+  ]
+}

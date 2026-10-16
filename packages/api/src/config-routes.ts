@@ -6,7 +6,7 @@ import type { ConfigPatch, DataAccess } from './data-access';
 import type { ShadowClient } from './shadow';
 
 /**
- * Remote configuration (spec §4). Thresholds live in RDS (read by the alert
+ * Remote configuration (spec §4). Thresholds live in DynamoDB (read by the alert
  * processor); the setpoint is additionally pushed to the Device Shadow's
  * desired state so the unit applies it and reports back. index.ts mounts
  * authenticate() on /api before this router, so res.locals.auth is set.

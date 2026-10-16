@@ -2,6 +2,15 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# Terraform local state and generated variables
+*.tfstate
+*.tfstate.*
+.terraform/
+terraform.tfvars
+*.auto.tfvars
+
+docs/MIGRACION_TERRAFORM.md
+
 # credenciales y certificados de dispositivos — NUNCA commitear
 certs/
 *.pem

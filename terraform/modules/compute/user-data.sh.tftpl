@@ -1,0 +1,41 @@
+#!/bin/bash
+set -euxo pipefail
+dnf install -y nodejs
+install -d /opt/snowball
+aws s3 cp "s3://${artifact_bucket}/api.bundle.js" /opt/snowball/api.bundle.js
+aws s3 cp "s3://${artifact_bucket}/alert-processor.bundle.js" /opt/snowball/alert-processor.bundle.js
+cat >/etc/snowball.env <<'ENV'
+AWS_REGION=${region}
+SQS_QUEUE_URL=${queue_url}
+SNS_THERMAL_EXCURSION_TOPIC_ARN=${thermal_topic_arn}
+JWT_SECRET=${jwt_secret}
+DDB_TABLE=${telemetry_table}
+DDB_STATE_TABLE=${state_table}
+DDB_USERS_TABLE=${users_table}
+DDB_CLIENTS_TABLE=${clients_table}
+DDB_UNITS_TABLE=${units_table}
+DDB_ALERTS_TABLE=${alerts_table}
+DDB_DEVICE_CONFIG_TABLE=${config_table}
+PORT=3000
+ENV
+chmod 600 /etc/snowball.env
+for svc in api alert-processor; do
+  if [ "$svc" = api ]; then bundle=api.bundle.js; else bundle=alert-processor.bundle.js; fi
+  cat >"/etc/systemd/system/snowball-$svc.service" <<UNIT
+[Unit]
+Description=Snowball $svc
+After=network-online.target
+Wants=network-online.target
+[Service]
+EnvironmentFile=/etc/snowball.env
+ExecStart=/usr/bin/node /opt/snowball/$bundle
+Restart=always
+RestartSec=5
+User=ec2-user
+[Install]
+WantedBy=multi-user.target
+UNIT
+done
+systemctl daemon-reload
+systemctl enable --now snowball-api snowball-alert-processor
+IOT_ENDPOINT=${iot_endpoint}

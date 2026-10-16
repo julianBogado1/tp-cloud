@@ -7,6 +7,11 @@
 export const NAMES = {
   telemetryTable: 'snowball-telemetry',
   unitStateTable: 'snowball-unit-state',
+  usersTable: 'snowball-users',
+  clientsTable: 'snowball-clients',
+  unitsTable: 'snowball-units',
+  alertsTable: 'snowball-alerts',
+  deviceConfigTable: 'snowball-device-config',
   readingsQueue: 'snowball-readings',
   readingsDlq: 'snowball-readings-dlq',
   thermalExcursionTopic: 'snowball-thermal-excursion',

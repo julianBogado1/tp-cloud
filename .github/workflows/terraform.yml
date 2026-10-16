@@ -1,0 +1,177 @@
+name: Terraform
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Qué ejecutar
+        type: choice
+        options: [plan, apply, destroy]
+        default: plan
+      confirm:
+        description: "Solo para destroy: escribir DESTROY"
+        type: string
+        required: false
+
+# El state remoto es único: nunca dos ejecuciones a la vez.
+concurrency:
+  group: terraform-state
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  AWS_REGION: us-east-1
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  # Credenciales temporales del Learner Lab (rotan en cada sesión)
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  # Variables de Terraform: nada hardcodeado, nada de terraform.tfvars en el repo
+  TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+  TF_VAR_bucket_suffix: ${{ vars.BUCKET_SUFFIX }}
+  TF_VAR_state_bucket_name: ${{ vars.STATE_BUCKET_NAME }}
+  TF_VAR_key_name: ${{ vars.KEY_NAME }}
+  TF_VAR_bastion_allowed_cidr: ${{ vars.BASTION_ALLOWED_CIDR }}
+  TF_VAR_sns_subscription_email: ${{ vars.SNS_SUBSCRIPTION_EMAIL }}
+
+jobs:
+  # fmt + init + validate: no necesitan credenciales, corren siempre (también en forks).
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform -chdir=terraform fmt -check -recursive -diff
+
+      - name: terraform init + validate
+        run: |
+          for dir in terraform terraform/bootstrap; do
+            terraform -chdir="$dir" init -backend=false -input=false
+            terraform -chdir="$dir" validate -no-color
+          done
+
+  # Tests y build de la aplicación (TypeScript)
+  app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # El build debe ir ANTES de los tests para que @snowball/shared esté disponible
+      - run: npm run build
+      - run: npm test
+
+  # En cada PR: plan contra el state real, comentado en el PR.
+  plan:
+    if: github.event_name == 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup
+        id: tf
+        uses: ./.github/actions/terraform-setup
+        with:
+          strict: "false"
+
+      - name: terraform plan
+        id: plan
+        if: steps.tf.outputs.ready == 'true'
+        working-directory: terraform
+        run: terraform plan -no-color -lock-timeout=120s -out=tfplan | tee plan.txt
+
+      - name: Comentar el plan en el PR
+        if: always() && steps.plan.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        env:
+          PLAN_OUTCOME: ${{ steps.plan.outcome }}
+        with:
+          script: |
+            const fs = require('fs');
+            const fence = '`'.repeat(3);
+            const marker = '<!-- terraform-plan -->';
+            let plan = fs.existsSync('terraform/plan.txt') ? fs.readFileSync('terraform/plan.txt', 'utf8') : '(sin salida)';
+            if (plan.length > 60000) plan = '... (recortado)\n' + plan.slice(-60000);
+            const body = `${marker}\n### Terraform plan: ${process.env.PLAN_OUTCOME}\n${fence}\n${plan}\n${fence}`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const previous = comments.find((c) => c.body && c.body.includes(marker));
+            if (previous) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: previous.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+  # Manual: plan / apply / destroy
+  deploy:
+    if: github.event_name == 'workflow_dispatch'
+    needs: [validate, app]
+    runs-on: ubuntu-latest
+    environment: learner-lab
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirmar destroy
+        if: inputs.action == 'destroy' && inputs.confirm != 'DESTROY'
+        run: |
+          echo "::error title=Destroy sin confirmar::Para destruir la infraestructura escribí DESTROY en el campo confirm."
+          exit 1
+
+      - name: Setup
+        uses: ./.github/actions/terraform-setup
+        with:
+          strict: "true"
+
+      - name: terraform plan
+        if: inputs.action != 'destroy'
+        working-directory: terraform
+        run: terraform plan -no-color -lock-timeout=120s -out=tfplan
+
+      - name: terraform apply
+        if: inputs.action == 'apply'
+        working-directory: terraform
+        run: terraform apply -no-color -lock-timeout=120s tfplan
+
+      - name: Compilar y publicar el dashboard
+        if: inputs.action == 'apply'
+        run: |
+          ALB="$(terraform -chdir=terraform output -raw alb_dns_name)"
+          BUCKET="$(terraform -chdir=terraform output -raw dashboard_bucket)"
+          VITE_API_BASE="http://${ALB}" npm run build -w @snowball/dashboard
+          aws s3 sync packages/dashboard/dist/ "s3://${BUCKET}/" --delete
+          {
+            echo "### Despliegue"
+            echo "- API: http://${ALB}"
+            echo "- Dashboard: http://${BUCKET}.s3-website-us-east-1.amazonaws.com"
+            echo "- IoT endpoint: $(terraform -chdir=terraform output -raw iot_endpoint)"
+            echo ""
+            echo "Los certificados IoT se bajan en tu máquina con scripts/export-certs.sh."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: terraform destroy
+        if: inputs.action == 'destroy'
+        working-directory: terraform
+        run: terraform destroy -no-color -auto-approve -lock-timeout=120s
