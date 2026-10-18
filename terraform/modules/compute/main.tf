@@ -21,13 +21,6 @@ resource "aws_s3_object" "api" {
   source_hash  = filemd5(var.api_bundle_path)
   content_type = "application/javascript"
 }
-resource "aws_s3_object" "alert" {
-  bucket       = var.artifact_bucket
-  key          = "alert-processor.bundle.js"
-  source       = var.alert_bundle_path
-  source_hash  = filemd5(var.alert_bundle_path)
-  content_type = "application/javascript"
-}
 resource "aws_lb_target_group" "app" {
   name     = "snowball-app-tg"
   port     = 3000
@@ -64,37 +57,56 @@ resource "aws_launch_template" "app" {
   iam_instance_profile {
     name = var.lab_instance_profile
   }
+  # api_bundle_md5 is rendered as a comment so a new bundle creates a new launch
+  # template version, which triggers the ASG instance refresh.
   user_data = base64encode(templatefile("${path.module}/user-data.sh.tftpl", {
-    region            = data.aws_region.current.region
-    artifact_bucket   = var.artifact_bucket
-    queue_url         = var.queue_url
-    thermal_topic_arn = var.thermal_topic_arn
-    jwt_secret        = var.jwt_secret
-    telemetry_table   = var.table_names.telemetry
-    state_table       = var.table_names.state
-    users_table       = var.table_names.users
-    clients_table     = var.table_names.clients
-    units_table       = var.table_names.units
-    alerts_table      = var.table_names.alerts
-    config_table      = var.table_names.config
-    iot_endpoint      = var.iot_endpoint
+    region          = data.aws_region.current.region
+    artifact_bucket = var.artifact_bucket
+    api_bundle_md5  = filemd5(var.api_bundle_path)
+    jwt_secret      = var.jwt_secret
+    cors_origin     = var.cors_origin
+    telemetry_table = var.table_names.telemetry
+    state_table     = var.table_names.state
+    users_table     = var.table_names.users
+    clients_table   = var.table_names.clients
+    units_table     = var.table_names.units
+    alerts_table    = var.table_names.alerts
+    config_table    = var.table_names.config
+    iot_endpoint    = var.iot_endpoint
   }))
+  # default_tags do not reach instances launched by the ASG.
+  tag_specifications {
+    resource_type = "instance"
+    tags          = merge(var.tags, { Name = "snowball-app" })
+  }
+  tag_specifications {
+    resource_type = "volume"
+    tags          = merge(var.tags, { Name = "snowball-app" })
+  }
   lifecycle {
     create_before_destroy = true
   }
-  depends_on = [aws_s3_object.api, aws_s3_object.alert]
+  depends_on = [aws_s3_object.api]
 }
 resource "aws_autoscaling_group" "app" {
   name                = "snowball-app-asg"
-  min_size            = 2
-  max_size            = 4
-  desired_capacity    = 2
+  min_size            = var.asg_min_size
+  max_size            = var.asg_max_size
+  desired_capacity    = var.asg_desired_capacity
   vpc_zone_identifier = var.subnet_ids
   target_group_arns   = [aws_lb_target_group.app.arn]
   health_check_type   = "ELB"
   launch_template {
     id      = aws_launch_template.app.id
-    version = "$Latest"
+    version = aws_launch_template.app.latest_version
+  }
+  # apply does not wait for the refresh to finish; check it in the console.
+  instance_refresh {
+    strategy = "Rolling"
+    preferences {
+      min_healthy_percentage = 50
+      instance_warmup        = 120
+    }
   }
 }
 resource "aws_instance" "bastion" {

@@ -64,13 +64,13 @@ resource "aws_iot_topic_rule" "telemetry" {
   dynamodbv2 {
     role_arn = var.lab_role_arn
     put_item {
-      table_name = var.names.telemetry_table
+      table_name = var.telemetry_table_name
     }
   }
   dynamodbv2 {
     role_arn = var.lab_role_arn
     put_item {
-      table_name = var.names.state_table
+      table_name = var.state_table_name
     }
   }
   sqs {
@@ -78,8 +78,10 @@ resource "aws_iot_topic_rule" "telemetry" {
     role_arn   = var.lab_role_arn
     use_base64 = false
   }
-  cloudwatch_logs {
-    log_group_name = aws_cloudwatch_log_group.errors.name
-    role_arn       = var.lab_role_arn
+  error_action {
+    cloudwatch_logs {
+      log_group_name = aws_cloudwatch_log_group.errors.name
+      role_arn       = var.lab_role_arn
+    }
   }
 }

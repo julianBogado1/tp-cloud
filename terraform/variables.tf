@@ -1,38 +1,45 @@
 variable "region" {
-  type    = string
-  default = "us-east-1"
+  type        = string
+  description = "AWS region to deploy into."
+  default     = "us-east-1"
 }
 variable "project" {
-  type    = string
-  default = "snowball"
+  type        = string
+  description = "Project name, used for tags and resource names."
+  default     = "snowball"
 }
 variable "bucket_suffix" {
   type        = string
   description = "Globally unique suffix for S3 buckets."
 }
-variable "state_bucket_name" {
-  type        = string
-  description = "Remote state bucket created by bootstrap."
-}
 variable "lab_role_name" {
-  type    = string
-  default = "LabRole"
+  type        = string
+  description = "Pre-existing Learner Lab IAM role used by IoT, Lambda and Scheduler."
+  default     = "LabRole"
 }
 variable "lab_instance_profile_name" {
-  type    = string
-  default = "LabInstanceProfile"
+  type        = string
+  description = "Pre-existing Learner Lab instance profile for the EC2 instances."
+  default     = "LabInstanceProfile"
 }
 variable "vpc_cidr" {
-  type    = string
-  default = "10.0.0.0/16"
+  type        = string
+  description = "CIDR block of the VPC (subnets are carved with cidrsubnet)."
+  default     = "10.0.0.0/16"
+  validation {
+    condition     = can(cidrhost(var.vpc_cidr, 0))
+    error_message = "vpc_cidr must be a valid IPv4 CIDR block, e.g. 10.0.0.0/16."
+  }
 }
 variable "availability_zones" {
-  type    = list(string)
-  default = ["us-east-1a", "us-east-1b"]
+  type        = list(string)
+  description = "Two availability zones for the public and application subnets."
+  default     = ["us-east-1a", "us-east-1b"]
 }
 variable "enable_bastion" {
-  type    = bool
-  default = false
+  type        = bool
+  description = "Create the optional SSH bastion in the first public subnet."
+  default     = false
 }
 variable "bastion_allowed_cidr" {
   type        = string
@@ -43,41 +50,82 @@ variable "key_name" {
   description = "Existing EC2 key pair name."
 }
 variable "jwt_secret" {
-  type      = string
-  sensitive = true
+  type        = string
+  description = "Secret used by the API to sign JWTs."
+  sensitive   = true
 }
 variable "sns_subscription_email" {
   type        = string
   description = "Email subscription for thermal excursion notifications."
+  validation {
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.sns_subscription_email))
+    error_message = "sns_subscription_email must be a valid email address."
+  }
+}
+variable "cors_origin" {
+  type        = string
+  description = "Allowed CORS origin for the API (CORS_ORIGIN). Use * for graders on localhost."
+  default     = "*"
 }
 variable "instance_type" {
-  type    = string
-  default = "t3.small"
+  type        = string
+  description = "EC2 instance type for the API Auto Scaling group."
+  default     = "t3.small"
+}
+variable "asg_min_size" {
+  type        = number
+  description = "Minimum number of API instances."
+  default     = 2
+}
+variable "asg_max_size" {
+  type        = number
+  description = "Maximum number of API instances."
+  default     = 4
+}
+variable "asg_desired_capacity" {
+  type        = number
+  description = "Desired number of API instances."
+  default     = 2
 }
 variable "ami_id" {
-  type     = string
-  default  = null
-  nullable = true
+  type        = string
+  description = "Optional AMI override; null uses the latest Amazon Linux 2023."
+  default     = null
+  nullable    = true
 }
 variable "api_bundle_path" {
-  type    = string
-  default = "../packages/api/dist/api.bundle.js"
+  type        = string
+  description = "Path to the bundled API (uploaded to the artifacts bucket)."
+  default     = "../packages/api/dist/api.bundle.js"
 }
-variable "alert_bundle_path" {
-  type    = string
-  default = "../packages/alert-processor/dist/alert-processor.bundle.js"
+variable "alert_lambda_zip_path" {
+  type        = string
+  description = "Path to the alert-processor Lambda zip."
+  default     = "../packages/alert-processor/dist/alert-processor.zip"
 }
 variable "lambda_zip_path" {
-  type    = string
-  default = "../packages/telemetry-export/dist/telemetry-export.zip"
+  type        = string
+  description = "Path to the telemetry-export Lambda zip."
+  default     = "../packages/telemetry-export/dist/telemetry-export.zip"
 }
 variable "seed_data_path" {
-  type    = string
-  default = "../scripts/seed-data.json"
+  type        = string
+  description = "JSON file with the seed items for the DynamoDB tables."
+  default     = "../scripts/seed-data.json"
 }
 variable "schedule_expression" {
-  type    = string
-  default = "cron(15 0 * * ? *)"
+  type        = string
+  description = "EventBridge Scheduler expression for the daily telemetry export."
+  default     = "cron(15 0 * * ? *)"
+}
+variable "archive_glacier_days" {
+  type        = number
+  description = "Days before archived telemetry transitions to S3 Glacier."
+  default     = 90
+  validation {
+    condition     = var.archive_glacier_days >= 30
+    error_message = "archive_glacier_days must be at least 30."
+  }
 }
 variable "unit_ids" {
   type        = list(string)

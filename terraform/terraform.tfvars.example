@@ -1,9 +1,14 @@
-region                    = "us-east-1"
-bucket_suffix             = "grupo-01"
-state_bucket_name         = "snowball-tfstate-grupo-01"
-bastion_allowed_cidr      = "203.0.113.10/32"
-key_name                  = "vockey"
-jwt_secret                = "replace-with-a-random-32-character-secret"
-sns_subscription_email    = "grupo@example.com"
+region                 = "us-east-1"
+bucket_suffix          = "grupo-01"
+bastion_allowed_cidr   = "203.0.113.10/32"
+key_name               = "vockey"
+jwt_secret             = "replace-with-a-random-32-character-secret"
+sns_subscription_email = "grupo@example.com"
+# cors_origin = "http://localhost:5173"
 # enable_bastion = true
 # ami_id = "ami-xxxxxxxxxxxxxxxxx"
+
+# The remote state bucket is not a Terraform variable: it is created by
+# scripts/bootstrap-buckets.sh <bucket_suffix> <state_bucket_name> and passed to
+# `terraform init -backend-config="bucket=<state_bucket_name>"` (CI uses
+# TF_VAR_state_bucket_name for both).

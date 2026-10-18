@@ -34,3 +34,19 @@ output "table_names" {
 output "queue_url" {
   value = module.messaging.queue_url
 }
+output "dlq_url" {
+  value = module.messaging.dlq_url
+}
+output "sns_topic_arns" {
+  description = "SNS topics: thermal (alert-processor), signal (no-signal alarm), battery (reserved, no publisher yet)."
+  value       = module.messaging.topic_arns
+}
+output "lambda_function_names" {
+  value = { for key, fn in module.lambda : key => fn.function_name }
+}
+output "lambda_function_arns" {
+  value = { for key, fn in module.lambda : key => fn.arn }
+}
+output "telemetry_export_schedule_arn" {
+  value = aws_scheduler_schedule.telemetry_export.arn
+}

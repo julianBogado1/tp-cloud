@@ -8,7 +8,8 @@
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "test": "vitest run",
-    "bundle": "esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=dist/alert-processor.bundle.js"
+    "bundle": "esbuild src/handler.ts --bundle --platform=node --target=node22 --external:@aws-sdk/* --outfile=dist/lambda/index.js",
+    "zip": "cd dist/lambda && (zip -j ../alert-processor.zip index.js || python -m zipfile -c ../alert-processor.zip index.js)"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.700.0",
@@ -16,5 +17,8 @@
     "@aws-sdk/client-sqs": "^3.700.0",
     "@aws-sdk/lib-dynamodb": "^3.700.0",
     "@snowball/shared": "*"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.164"
   }
 }

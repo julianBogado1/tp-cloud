@@ -4,10 +4,11 @@ resource "aws_sqs_queue" "dlq" {
 }
 resource "aws_sqs_queue" "readings" {
   name                       = var.names.readings_queue
-  visibility_timeout_seconds = 60
+  visibility_timeout_seconds = 180 # >= 6x the alert-processor Lambda timeout (30 s)
   receive_wait_time_seconds  = 20
-  redrive_policy             = jsonencode({ deadLetterTargetArn = aws_sqs_queue.dlq.arn, maxReceiveCount = 3 })
+  redrive_policy             = jsonencode({ deadLetterTargetArn = aws_sqs_queue.dlq.arn, maxReceiveCount = 5 })
 }
+# battery ("snowball-low-battery") is reserved: no publisher yet.
 resource "aws_sns_topic" "topics" {
   for_each = { thermal = var.names.thermal_topic, battery = var.names.battery_topic, signal = var.names.signal_topic }
   name     = each.value

@@ -19,3 +19,9 @@ certs/
 .env.*
 !packages/*/.env.example
 docs/superpowers
+
+# Terraform plan outputs (contain state snapshot + variable values) — never commit
+tfplan
+*.tfplan
+plan.txt
+crash.log

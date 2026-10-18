@@ -1,5 +1,10 @@
 name: Terraform
 
+# apply/destroy son manuales (workflow_dispatch), sin trigger en push: las credenciales
+# del Learner Lab vencen cada ~4 h, así que un apply automático fallaría casi siempre.
+# Para desplegar: pegar los 3 secrets AWS_* de la sesión actual y luego
+# Actions → Terraform → Run workflow → action = apply.
+
 on:
   pull_request:
   workflow_dispatch:
@@ -37,6 +42,7 @@ env:
   # Variables de Terraform: nada hardcodeado, nada de terraform.tfvars en el repo
   TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
   TF_VAR_bucket_suffix: ${{ vars.BUCKET_SUFFIX }}
+  # Ya no es variable de Terraform (Terraform ignora los TF_VAR_* no declarados): lo usan scripts/bootstrap-buckets.sh y `terraform init -backend-config`.
   TF_VAR_state_bucket_name: ${{ vars.STATE_BUCKET_NAME }}
   TF_VAR_key_name: ${{ vars.KEY_NAME }}
   TF_VAR_bastion_allowed_cidr: ${{ vars.BASTION_ALLOWED_CIDR }}
@@ -59,10 +65,8 @@ jobs:
 
       - name: terraform init + validate
         run: |
-          for dir in terraform terraform/bootstrap; do
-            terraform -chdir="$dir" init -backend=false -input=false
-            terraform -chdir="$dir" validate -no-color
-          done
+          terraform -chdir=terraform init -backend=false -input=false
+          terraform -chdir=terraform validate -no-color
 
   # Tests y build de la aplicación (TypeScript)
   app:
@@ -128,6 +132,8 @@ jobs:
   # Manual: plan / apply / destroy
   deploy:
     if: github.event_name == 'workflow_dispatch'
+    # TODO(4.3): restringir apply/destroy a main una vez verificado el apply manual desde la rama:
+    # if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: [validate, app]
     runs-on: ubuntu-latest
     environment: learner-lab

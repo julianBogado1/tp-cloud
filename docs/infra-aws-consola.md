@@ -1,5 +1,12 @@
 # Snowball — Guía de infraestructura por consola AWS (VPC + ingesta + alertas + API + dashboard)
 
+> **Documento histórico.** Esta guía describe la infraestructura de la
+> **segunda entrega**, armada a mano desde la consola: todavía incluye RDS
+> PostgreSQL, la capa de datos de la VPC y el alert-processor corriendo en EC2.
+> Se conserva solo como referencia y no se actualiza. La infraestructura
+> vigente (una sola base, DynamoDB; procesador de alertas en Lambda; todo con
+> Terraform) está en [`docs/infra-terraform.md`](infra-terraform.md).
+
 Guía paso a paso para crear **a mano, desde la consola**, todos los recursos que
 el código de este repo necesita. No usamos IaC en esta entrega: cualquier
 integrante puede reconstruir el entorno siguiendo este documento (por ejemplo,

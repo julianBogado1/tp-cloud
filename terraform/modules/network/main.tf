@@ -10,7 +10,7 @@ resource "aws_vpc" "this" {
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
   enable_dns_hostnames = true
-  tags                 = { Name = "snowball-vpc" }
+  tags                 = { Name = "${var.project}-vpc" }
 }
 resource "aws_subnet" "this" {
   for_each                = local.subnets
@@ -74,7 +74,7 @@ resource "aws_vpc_endpoint" "gateway" {
   tags              = { Name = each.key == "s3" ? "vpce-s3" : "vpce-ddb" }
 }
 resource "aws_security_group" "alb" {
-  name        = "snowball-sg-alb"
+  name        = "${var.project}-sg-alb"
   description = "ALB ingress"
   vpc_id      = aws_vpc.this.id
   tags        = { Name = "sg-alb" }
@@ -96,7 +96,7 @@ resource "aws_security_group_rule" "alb_egress" {
   source_security_group_id = aws_security_group.app.id
 }
 resource "aws_security_group" "app" {
-  name        = "snowball-sg-app"
+  name        = "${var.project}-sg-app"
   description = "Private application instances"
   vpc_id      = aws_vpc.this.id
   tags        = { Name = "sg-app" }
@@ -126,7 +126,7 @@ resource "aws_security_group_rule" "app_https" {
   cidr_blocks       = ["0.0.0.0/0"]
 }
 resource "aws_security_group" "bastion" {
-  name        = "snowball-sg-bastion"
+  name        = "${var.project}-sg-bastion"
   description = "Optional administration bastion"
   vpc_id      = aws_vpc.this.id
   tags        = { Name = "sg-bastion" }

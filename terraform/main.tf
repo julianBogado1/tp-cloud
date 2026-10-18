@@ -61,7 +61,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "archive" {
     status = "Enabled"
     filter { prefix = "telemetry/" }
     transition {
-      days          = 30
+      days          = var.archive_glacier_days
       storage_class = "GLACIER"
     }
   }
@@ -104,18 +104,20 @@ resource "aws_s3_bucket_policy" "dashboard" {
 }
 
 module "iot_ingest" {
-  source              = "./modules/iot-ingest"
-  names               = local.names
-  units               = local.units
-  lab_role_arn        = data.aws_iam_role.lab.arn
-  telemetry_table_arn = module.data.table_arns.telemetry
-  state_table_arn     = module.data.table_arns.state
-  queue_url           = module.messaging.queue_url
+  source               = "./modules/iot-ingest"
+  names                = local.names
+  units                = local.units
+  lab_role_arn         = data.aws_iam_role.lab.arn
+  telemetry_table_name = module.data.table_names.telemetry
+  state_table_name     = module.data.table_names.state
+  queue_url            = module.messaging.queue_url
 }
 
+# No module-level depends_on here: it would defer data.aws_ami / data.aws_region
+# inside the module and churn the launch template. Dependencies are implicit
+# through table_names and iot_endpoint.
 module "compute" {
   source                    = "./modules/compute"
-  project                   = var.project
   instance_type             = var.instance_type
   ami_id                    = var.ami_id
   key_name                  = var.key_name
@@ -129,24 +131,65 @@ module "compute" {
   vpc_id                    = module.network.vpc_id
   artifact_bucket           = local.bucket_names.artifacts
   api_bundle_path           = var.api_bundle_path
-  alert_bundle_path         = var.alert_bundle_path
-  names                     = local.names
-  queue_url                 = module.messaging.queue_url
-  thermal_topic_arn         = module.messaging.thermal_topic_arn
   jwt_secret                = var.jwt_secret
+  cors_origin               = var.cors_origin
   table_names               = module.data.table_names
-  depends_on                = [module.data, module.messaging]
   iot_endpoint              = module.iot_ingest.iot_endpoint
+  asg_min_size              = var.asg_min_size
+  asg_max_size              = var.asg_max_size
+  asg_desired_capacity      = var.asg_desired_capacity
+  tags                      = local.common_tags
 }
 
-module "export" {
-  source              = "./modules/export"
-  function_name       = "snowball-telemetry-export"
-  lambda_zip_path     = var.lambda_zip_path
-  archive_bucket      = local.bucket_names.archive
-  telemetry_table     = local.names.telemetry_table
-  state_table         = local.names.state_table
-  lab_role_arn        = data.aws_iam_role.lab.arn
+# Both Lambdas run outside the VPC with LabRole. Table names come from module.data
+# outputs (implicit dependency); the archive bucket is read from the lifecycle
+# resource so the function is created after the bucket is configured.
+module "lambda" {
+  source   = "./modules/lambda-function"
+  for_each = local.lambdas
+
+  function_name = each.value.function_name
+  zip_path      = each.value.zip_path
+  timeout       = each.value.timeout
+  memory_size   = each.value.memory_size
+  environment   = each.value.environment
+  lab_role_arn  = data.aws_iam_role.lab.arn
+}
+
+resource "aws_scheduler_schedule" "telemetry_export" {
+  name                = "snowball-telemetry-export"
   schedule_expression = var.schedule_expression
-  depends_on          = [module.data, aws_s3_bucket_lifecycle_configuration.archive]
+  flexible_time_window {
+    mode = "OFF"
+  }
+  target {
+    arn      = module.lambda["telemetry-export"].arn
+    role_arn = data.aws_iam_role.lab.arn
+    input    = "{}"
+  }
+}
+
+# SQS -> alert-processor. Partial batch responses keep successful messages from
+# being retried; maximum_concurrency = 2 (the minimum) limits concurrent state writes.
+resource "aws_lambda_event_source_mapping" "alert_processor" {
+  event_source_arn        = module.messaging.queue_arn
+  function_name           = module.lambda["alert-processor"].arn
+  batch_size              = 10
+  function_response_types = ["ReportBatchItemFailures"]
+  scaling_config {
+    maximum_concurrency = 2
+  }
+}
+
+moved {
+  from = module.export.aws_lambda_function.this
+  to   = module.lambda["telemetry-export"].aws_lambda_function.this
+}
+moved {
+  from = module.export.aws_cloudwatch_log_group.lambda
+  to   = module.lambda["telemetry-export"].aws_cloudwatch_log_group.this
+}
+moved {
+  from = module.export.aws_scheduler_schedule.daily
+  to   = aws_scheduler_schedule.telemetry_export
 }

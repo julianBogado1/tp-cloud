@@ -8,7 +8,7 @@ Todas las tablas de dominio tienen los nombres definidos en `packages/shared/src
 | `clients` / `NAMES.clientsTable` | `id` (Number) | Ninguna | Ninguno | Validación de existencia de cliente al crear/editar usuarios. |
 | `units` / `NAMES.unitsTable` | `unit_id` (String) | Ninguna | `client_id-index`: `client_id` | `GET /units` y `GET /units/:id/*`; operadores/supervisores consultan sólo su tenant mediante el GSI; admin usa Scan. |
 | `device-config` / `NAMES.deviceConfigTable` | `unit_id` (String) | Ninguna | Ninguno | Lectura de umbrales por unidad en API y alert-processor; actualización parcial de configuración. |
-| `alerts` / `NAMES.alertsTable` | `id` (Number) | Ninguna | `client_id-emitted_at-index`: `client_id`, `emitted_at` | Alert-processor inserta alertas con tenant; `GET /alerts` consulta por tenant y fecha; admin usa Scan; ack obtiene por `id` y actualiza condicionalmente. |
+| `alerts` / `NAMES.alertsTable` | `id` (Number) | Ninguna | `client_id-emitted_at-index`: `client_id`, `emitted_at` | Alert-processor inserta alertas con tenant, con `id` determinístico (entero derivado de `sha256(unit_id\|since)`) y `attribute_not_exists(id)`, así un reintento de SQS no duplica la fila; `GET /alerts` consulta por tenant y fecha; admin usa Scan; ack obtiene por `id` y actualiza condicionalmente. |
 
 ## Campos denormalizados
 

@@ -1,19 +1,12 @@
-import {
-  DeleteMessageCommand,
-  ReceiveMessageCommand,
-  SQSClient,
-  type Message,
-} from '@aws-sdk/client-sqs';
-import { PublishCommand, SNSClient } from '@aws-sdk/client-sns';
+import { DeleteMessageCommand, ReceiveMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
 import { requireEnv } from '@snowball/shared';
-import { evaluate } from './excursion';
-import { parseReading } from './parse';
-import { getState, saveState } from './state';
-import { closePool, getThreshold, insertAlert } from './thresholds';
+import { processMessage } from './process';
+import { closePool } from './thresholds';
 
 /**
- * Alert processor: consumes the queue fed by the IoT Core rule, evaluates
- * each reading against the DynamoDB thresholds and notifies through SNS.
+ * Alert processor, local long-poll loop (`npm run dev`). In AWS the same
+ * logic runs as a Lambda behind an SQS event source mapping (`handler.ts`);
+ * both share `process.ts`.
  *
  * Environment variables:
  *   SQS_QUEUE_URL                    (required)
@@ -26,45 +19,12 @@ import { closePool, getThreshold, insertAlert } from './thresholds';
  */
 
 const sqs = new SQSClient({});
-const sns = new SNSClient({});
 
 const QUEUE_URL = requireEnv('SQS_QUEUE_URL');
-const THERMAL_EXCURSION_TOPIC_ARN = requireEnv('SNS_THERMAL_EXCURSION_TOPIC_ARN');
+// Fail fast at startup rather than on the first alert.
+requireEnv('SNS_THERMAL_EXCURSION_TOPIC_ARN');
 
 let running = true;
-
-async function processMessage(message: Message): Promise<void> {
-  const reading = parseReading(message.Body ?? '');
-
-  const config = await getThreshold(reading.unit_id);
-  if (!config) {
-    console.warn(`[${reading.unit_id}] no device_config in DynamoDB — reading discarded`);
-    return;
-  }
-
-  const previousState = await getState(reading.unit_id);
-  const { state, alert } = evaluate(previousState, reading, config);
-
-  if (state.phase !== previousState.phase || state.since !== previousState.since) {
-    await saveState(reading.unit_id, state);
-    console.log(`[${reading.unit_id}] ${previousState.phase} -> ${state.phase} (${reading.temp_c}°C)`);
-  }
-
-  if (alert) {
-    await sns.send(
-      new PublishCommand({
-        TopicArn: THERMAL_EXCURSION_TOPIC_ARN,
-        Subject: `Thermal excursion — ${alert.unit_id}`,
-        Message:
-          `${alert.detail}\n` +
-          `Deviation start: ${alert.since}\n` +
-          `Position: ${alert.lat}, ${alert.lon}`,
-      }),
-    );
-    await insertAlert(alert);
-    console.log(`[${alert.unit_id}] ALERT emitted: ${alert.detail}`);
-  }
-}
 
 async function loop(): Promise<void> {
   console.log(`Alert processor listening on ${QUEUE_URL}`);
@@ -78,7 +38,7 @@ async function loop(): Promise<void> {
     );
     for (const message of Messages ?? []) {
       try {
-        await processMessage(message);
+        await processMessage(message.Body ?? '');
         await sqs.send(
           new DeleteMessageCommand({ QueueUrl: QUEUE_URL, ReceiptHandle: message.ReceiptHandle }),
         );

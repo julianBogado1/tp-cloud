@@ -1,7 +1,8 @@
 name: Terraform setup
 description: >
   Verifica secrets y credenciales del Learner Lab, compila los bundles,
-  instala Terraform, crea los buckets (idempotente) e inicializa el backend.
+  instala Terraform, crea los buckets (idempotente, solo fuera de PRs) e
+  inicializa el backend.
   Las credenciales y las TF_VAR_* llegan por el env del job.
 
 inputs:
@@ -17,11 +18,16 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Verificar secrets y variables
+    # Un único step decide `ready` (los outputs de un step no se pueden pisar después).
+    # En pull_request nada falla por credenciales/buckets: se emite un warning y se omite
+    # el plan, para que un fork o una sesión del Learner Lab vencida no dejen el PR en rojo.
+    # En workflow_dispatch (apply/destroy) un problema de credenciales sí falla el job.
+    - name: Verificar secrets, variables y credenciales
       id: gate
       shell: bash
       env:
         STRICT: ${{ inputs.strict }}
+        IS_PR: ${{ github.event_name == 'pull_request' }}
       run: |
         missing=()
         for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
@@ -36,18 +42,27 @@ runs:
             exit 1
           fi
           echo "::warning title=Plan omitido::Faltan secrets o variables (${missing[*]}). Ver README."
-        else
-          echo "ready=true" >> "$GITHUB_OUTPUT"
+          exit 0
         fi
 
-    - name: Verificar credenciales de AWS
-      if: steps.gate.outputs.ready == 'true'
-      shell: bash
-      run: |
         if ! aws sts get-caller-identity > /dev/null 2>&1; then
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          if [ "$IS_PR" = "true" ]; then
+            echo "::warning title=Plan omitido: credenciales vencidas::Las credenciales del Learner Lab vencieron. Actualizá los 3 secrets de AWS y re-ejecutá el job."
+            exit 0
+          fi
           echo "::error title=Credenciales vencidas::Las credenciales del Learner Lab vencieron. Actualizá los 3 secrets de AWS y re-ejecutá el job."
           exit 1
         fi
+
+        # En PR no se crean buckets (sin efectos secundarios): el state bucket tiene que existir.
+        if [ "$IS_PR" = "true" ] && ! aws s3api head-bucket --bucket "$TF_VAR_state_bucket_name" --region "$AWS_REGION" > /dev/null 2>&1; then
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          echo "::warning title=Plan omitido: falta el state bucket::El bucket ${TF_VAR_state_bucket_name} no existe o no es accesible. Corré Actions → Run workflow → apply (o scripts/bootstrap-buckets.sh) primero."
+          exit 0
+        fi
+
+        echo "ready=true" >> "$GITHUB_OUTPUT"
 
     - name: Node
       if: steps.gate.outputs.ready == 'true'
@@ -70,8 +85,9 @@ runs:
         terraform_version: 1.10.5
         terraform_wrapper: false
 
+    # Solo en workflow_dispatch: el plan de un PR no debe crear recursos.
     - name: Crear buckets (idempotente)
-      if: steps.gate.outputs.ready == 'true'
+      if: steps.gate.outputs.ready == 'true' && github.event_name != 'pull_request'
       shell: bash
       run: bash scripts/bootstrap-buckets.sh "$TF_VAR_bucket_suffix" "$TF_VAR_state_bucket_name"
 
