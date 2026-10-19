@@ -45,6 +45,7 @@ sale de `snowball-unit-state` y el historial de `snowball-telemetry`.
 | [`docs/infra-terraform.md`](docs/infra-terraform.md) | **Guía vigente**: levantar todo con Terraform en el Learner Lab, paso a paso, con verificación, pipeline, destroy y troubleshooting |
 | [`docs/dynamodb-model.md`](docs/dynamodb-model.md) | Modelo de tablas DynamoDB: claves, GSIs y qué consulta cubre cada uno |
 | [`docs/terraform-buckets-learner-lab.md`](docs/terraform-buckets-learner-lab.md) | Por qué los buckets se crean por script y no por Terraform |
+| [`docs/features-faltantes-propuesta.md`](docs/features-faltantes-propuesta.md) | Relevamiento de lo que falta respecto de la propuesta formal de la Entrega 1 (features, multi-región y requisitos no funcionales) |
 | [`docs/infra-aws-consola.md`](docs/infra-aws-consola.md) | Guía histórica de la Entrega 2 (todo a mano desde la consola, todavía con RDS y con el alert-processor en EC2). Solo se le agregó un aviso al comienzo |
 
 ## Estructura
