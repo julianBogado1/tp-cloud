@@ -8,16 +8,26 @@ resource "aws_sqs_queue" "readings" {
   receive_wait_time_seconds  = 20
   redrive_policy             = jsonencode({ deadLetterTargetArn = aws_sqs_queue.dlq.arn, maxReceiveCount = 5 })
 }
-# battery ("snowball-low-battery") is reserved: no publisher yet.
+# battery ("snowball-low-battery") is reserved: no publisher yet, so it gets no
+# email subscription either.
 resource "aws_sns_topic" "topics" {
   for_each = { thermal = var.names.thermal_topic, battery = var.names.battery_topic, signal = var.names.signal_topic }
   name     = each.value
 }
-resource "aws_sns_topic_subscription" "thermal_email" {
-  count     = var.subscription_email == null ? 0 : 1
-  topic_arn = aws_sns_topic.topics["thermal"].arn
+# Both topics that have a publisher. The no-signal one had no subscriber at
+# all until now, so its alarm fired without reaching anyone.
+resource "aws_sns_topic_subscription" "email" {
+  for_each  = toset(var.subscription_email == null ? [] : ["thermal", "signal"])
+  topic_arn = aws_sns_topic.topics[each.key].arn
   protocol  = "email"
   endpoint  = var.subscription_email
+}
+# count (thermal only) -> for_each moves the state address: without this,
+# Terraform recreates the thermal subscription and the email needs confirming
+# again.
+moved {
+  from = aws_sns_topic_subscription.thermal_email[0]
+  to   = aws_sns_topic_subscription.email["thermal"]
 }
 
 # External registry module: fleet-level "no signal" alarm. If the readings queue

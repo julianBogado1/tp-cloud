@@ -50,3 +50,6 @@ output "lambda_function_arns" {
 output "telemetry_export_schedule_arn" {
   value = aws_scheduler_schedule.telemetry_export.arn
 }
+output "no_signal_schedule_arn" {
+  value = aws_scheduler_schedule.no_signal_monitor.arn
+}

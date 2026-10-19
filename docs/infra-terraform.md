@@ -51,7 +51,10 @@ simulator (local) ──MQTT/TLS──▶ IoT Core · regla snowball_telemetry
                                   │      └──▶ DynamoDB (device-config, units, alerts, estado de excursión)
                                   └─▶ solo si falla una acción (error_action): CloudWatch Logs /aws/iot/snowball-iot-errors
 MONITOREO
-CloudWatch alarm (la cola no recibe nada en 15 min) ──▶ SNS snowball-no-signal
+EventBridge Scheduler (rate(1 minute)) ──▶ Lambda snowball-no-signal-monitor (barrido por unidad)
+                                             ├─▶ DynamoDB (units, unit-state, device-config, alerts, ítem _signal)
+                                             └─▶ SNS snowball-no-signal ──▶ mail
+CloudWatch alarm (la cola no recibe nada en 15 min) ──▶ SNS snowball-no-signal ──▶ mail
 
 ARCHIVO
 EventBridge Scheduler (diario 00:15 UTC) ──▶ Lambda snowball-telemetry-export ──▶ S3 snowball-archive
@@ -74,6 +77,7 @@ VPC 10.0.0.0/16 (us-east-1a / us-east-1b)
 Fuera de la VPC (servicios gestionados, endpoints públicos, LabRole)
 IoT Core · SQS + DLQ · SNS · DynamoDB · S3 · EventBridge Scheduler
 Lambda snowball-alert-processor · Lambda snowball-telemetry-export
+Lambda snowball-no-signal-monitor
 ```
 
 Las tablas de ruteo no se dibujan en el diagrama de arquitectura; quedan
@@ -98,6 +102,14 @@ el `client_id` se denormaliza en unidades y alertas. El modelo completo está en
   mapping* le da reintentos, respuestas parciales de lote y la DLQ. Además
   elimina la carrera que había con dos instancias del ASG consumiendo la cola,
   cada una con su caché en memoria del estado de excursión.
+- **Monitor de «sin señal» → Lambda agendada** (`snowball-no-signal-monitor`).
+  Todo el pipeline de alertas es *event-driven* por lectura entrante, y la
+  ausencia de datos, por definición, no genera ningún evento: hace falta algo
+  que se despierte por tiempo. La alternativa —una alarma de CloudWatch por
+  unidad— exigiría publicar una métrica custom con dimensión `unit_id` en cada
+  lectura y declarar N alarmas con `for_each = var.unit_ids`, lo que rompe el
+  requisito de escalar de 10 a 1.000 dispositivos sin rediseño (1.000 alarmas y
+  1.000 métricas custom) y es caro en cuota del Lab. Se descartó a propósito.
 - **API → EC2** (ASG detrás del ALB). `/live` es un servidor WebSocket que
   mantiene conexiones abiertas y consulta DynamoDB por cada cliente conectado;
   una Lambda no puede sostenerlas. La alternativa serverless (API Gateway
@@ -118,16 +130,18 @@ Recursos que crea Terraform (resumen; el detalle por módulo está en la
 - **Datos:** 7 tablas DynamoDB (`telemetry`, `unit-state`, `users`, `clients`,
   `units`, `alerts`, `device-config`) con sus GSIs y los datos demo (seed).
 - **Mensajería:** cola SQS + DLQ, 3 tópicos SNS (térmico, sin señal y batería,
-  este último reservado y sin publicador), suscripción por mail al de excursión
-  térmica, alarma CloudWatch de «sin señal».
+  este último reservado y sin publicador), suscripción por mail a los dos
+  tópicos que tienen publicador (excursión térmica y sin señal), alarma
+  CloudWatch de flota de «sin señal».
 - **IoT Core:** policy de dispositivos, un *thing* + certificado por unidad y
   la regla `snowball_telemetry` (3 acciones + `error_action` a CloudWatch Logs).
 - **Cómputo:** ALB, target group, launch template y Auto Scaling Group (2–4
   `t3.small` por defecto, en subredes privadas, con *instance refresh*). Las
   instancias corren solo la API. Bastión opcional.
 - **Lambdas:** `snowball-alert-processor` (con *event source mapping* desde
-  SQS) y `snowball-telemetry-export` (con schedule diario en EventBridge
-  Scheduler), ambas del módulo genérico `lambda-function`.
+  SQS), `snowball-telemetry-export` (con schedule diario en EventBridge
+  Scheduler) y `snowball-no-signal-monitor` (con schedule cada minuto en
+  EventBridge Scheduler), las tres del módulo genérico `lambda-function`.
 - **S3:** configuración de los buckets de dashboard, artifacts y archive, y
   subida del bundle de la API.
 
@@ -326,7 +340,7 @@ Todas las variables, incluidas las opcionales, están en la
 
 Ni las EC2 ni las Lambdas compilan nada: reciben **artefactos ya
 construidos**. El bundle de la API lo sube Terraform a S3 (`aws_s3_object`) y
-el *user data* de cada instancia lo descarga al arrancar; los ZIPs de las dos
+el *user data* de cada instancia lo descarga al arrancar; los ZIPs de las tres
 Lambdas los sube Terraform directamente al crear o actualizar cada función.
 Hay que generarlos **antes** de `plan`/`apply`:
 
@@ -335,13 +349,18 @@ npm run bundle
 ```
 
 (Para armar los ZIPs usa `zip` y, si no está instalado, `python -m zipfile`.)
-Verificá que existan los tres archivos:
+Verificá que existan los cuatro archivos:
 
 ```bash
 ls -l packages/api/dist/api.bundle.js \
       packages/alert-processor/dist/alert-processor.zip \
+      packages/alert-processor/dist/no-signal-monitor.zip \
       packages/telemetry-export/dist/telemetry-export.zip
 ```
+
+`packages/alert-processor` produce **dos** ZIPs: el consumidor de SQS y el
+monitor de «sin señal» (`src/no-signal-handler.ts`), que comparten
+`thresholds.ts` y `alert-id.ts` y se empaquetan por separado.
 
 Si falta alguno, `terraform plan` falla con `no file exists at ...` (los lee
 con `filemd5()`/`filebase64sha256()`).
@@ -505,7 +524,8 @@ npm run simulator -- \
 ```
 
 - `--excursion SB-001@60`: a los 60 s la unidad SB-001 empieza a calentarse
-  hasta salir de rango. `--silence SB-002@120`: a los 2 min deja de reportar.
+  hasta salir de rango. `--silence SB-002@120`: a los 2 min deja de reportar
+  (es el escenario con el que se prueba el monitor de «sin señal»).
 - Cada unidad debe imprimir `[SB-001] connected to IoT Core` y después una
   lectura cada 5 s. **Ojo:** el simulador imprime cada lectura apenas la genera,
   aunque no haya logrado conectarse. Si no ves `connected to IoT Core`, el
@@ -624,13 +644,51 @@ Con el simulador corriendo, recorré el camino de los datos de punta a punta.
   unidad que haya reportado. (El schedule diario corre a las 00:15 UTC y exporta
   el día anterior.)
 
-**Alarma «sin señal»**
+**«Sin señal» por unidad**
+
+El tópico `snowball-no-signal` ahora tiene suscripción por mail (el mismo
+`sns_subscription_email` del tópico térmico): **hay que confirmarla** desde el
+mail de AWS, igual que la de excursión, o no llega nada.
+
+- [ ] La Lambda y su schedule existen:
+  ```bash
+  aws lambda get-function --function-name snowball-no-signal-monitor \
+    --query 'Configuration.[Timeout,MemorySize,Environment.Variables.NO_SIGNAL_TIMEOUT_MIN]'
+  aws scheduler get-schedule --name snowball-no-signal-monitor \
+    --query '[ScheduleExpression,State]'
+  ```
+  Tiene que devolver `60` (timeout de la Lambda, en segundos), `256` (MB de
+  memoria), `"10"` (el fallback `NO_SIGNAL_TIMEOUT_MIN`, en minutos),
+  `rate(1 minute)` y `ENABLED`.
+- [ ] Silenciá una unidad agregando `--silence SB-002@120` al comando del
+  simulador (sección 11), o apagalo del todo. Pasados los minutos de
+  `signal_timeout_min` de esa unidad (`snowball-device-config`, 10 por defecto)
+  llega **un mail** por «sin señal» y aparece **una sola fila** con
+  `severity = no-signal` en `snowball-alerts` y en el dashboard, aunque el
+  barrido corra cada minuto: el ítem `_signal` de la unidad queda en fase
+  `silent` y los barridos siguientes no vuelven a alertar.
+- [ ] Al volver a publicar, la unidad pasa a `ok` y llega un **aviso de
+  recuperación** por el mismo tópico. Ese aviso **no** escribe fila en
+  `snowball-alerts`: no es una alerta.
+- [ ] Evidencia para la defensa: el delta entre el `ts` de la última lectura y
+  el `emitted_at` de la alerta es la latencia de detección real (acotada por
+  abajo por la granularidad de un minuto del scheduler).
+- [ ] Logs del barrido, si algo no sale:
+  ```bash
+  aws logs tail /aws/lambda/snowball-no-signal-monitor --since 10m
+  ```
+
+**Alarma de flota «sin señal»**
+
+Es un segundo nivel, no una redundancia: detecta la caída del *pipeline* (la
+cola no recibe nada de nadie), que es un modo de falla distinto de «esta unidad
+se calló».
 
 - [ ] `aws cloudwatch describe-alarms --alarm-names snowball-no-signal-alarm`
   existe. Con el simulador corriendo pasa a `OK`; si dejás 15 minutos sin
   mensajes pasa a `ALARM` (también arranca en `ALARM`/`INSUFFICIENT_DATA`
-  recién creada y sin tráfico). Publica al tópico `snowball-no-signal`, que
-  **no tiene suscriptores**: se ve en CloudWatch, no llega por mail.
+  recién creada y sin tráfico). Publica al mismo tópico `snowball-no-signal`,
+  así que con la suscripción confirmada también llega por mail.
 
 **Resiliencia**
 
@@ -699,7 +757,7 @@ Detalle de cada job:
 La composite action hace, en orden: verificar secrets/variables → verificar
 credenciales (`aws sts get-caller-identity`) → en PR, verificar que exista el
 bucket de state → instalar Node → `npm ci` + `npm run bundle` (bundle de la
-API y ZIPs de las dos Lambdas) → instalar Terraform → **crear los buckets**
+API y ZIPs de las tres Lambdas) → instalar Terraform → **crear los buckets**
 (`scripts/bootstrap-buckets.sh`, idempotente; **solo en `workflow_dispatch`**)
 → `terraform init` con el backend remoto. El workflow define `concurrency`
 para que nunca corran dos ejecuciones a la vez sobre el mismo state.
@@ -829,7 +887,7 @@ aws autoscaling describe-instance-refreshes --auto-scaling-group-name snowball-a
 y al terminar validá que el target group muestre 2 `healthy`, `/health` y el
 login.
 
-**Cambió el código de una Lambda (alert-processor o telemetry-export).**
+**Cambió el código de una Lambda (alert-processor, no-signal-monitor o telemetry-export).**
 `npm run bundle` + `terraform apply`: `source_code_hash` (`filebase64sha256`
 del ZIP) detecta el cambio y actualiza la función. No hay instancias que
 reemplazar.
@@ -911,10 +969,10 @@ terraform/
 └── modules/
     ├── network/         # VPC, subredes, NAT, rutas, endpoints, security groups
     ├── data/            # tablas DynamoDB + seed
-    ├── messaging/       # SQS + DLQ, SNS, alarma (módulo externo)
+    ├── messaging/       # SQS + DLQ, SNS, suscripciones, alarma (módulo externo)
     ├── iot-ingest/      # IoT: policy, things, certificados, regla + error action
     ├── compute/         # bundle de la API, ALB, launch template, ASG, bastión
-    └── lambda-function/ # Lambda genérica + log group (instanciada 2 veces con for_each)
+    └── lambda-function/ # Lambda genérica + log group (instanciada 3 veces con for_each)
 ```
 
 ### Módulos propios
@@ -922,21 +980,23 @@ terraform/
 | Módulo | Qué crea | Entradas principales | Salidas |
 |---|---|---|---|
 | `network` | VPC, 4 subredes (2 públicas, 2 de aplicación) con `cidrsubnet`, IGW, EIP + NAT, tablas de ruteo, gateway endpoints S3/DynamoDB, security groups `sg-alb`/`sg-app`/`sg-bastion` encadenados por referencia | `vpc_cidr`, `availability_zones`, `bastion_allowed_cidr` | `vpc_id`, `public_subnet_ids`, `app_subnet_ids`, `*_security_group_id` |
-| `data` | Las 7 tablas DynamoDB (definiciones en un mapa → `for_each`, GSIs/TTL en bloques `dynamic`) y los ítems de seed desde `scripts/seed-data.json` | `table_names`, `seed_path` | `table_names`, `table_arns`, `table_ids` |
-| `messaging` | Cola `snowball-readings` (visibilidad 180 s, long polling 20 s) + DLQ (`maxReceiveCount = 5`, retención 14 días), tópicos SNS (térmico, sin señal, y batería —reservado, sin publicador—), suscripción por mail (`count`), alarma «sin señal» | `names`, `subscription_email` | `queue_url`, `queue_arn`, `dlq_url`, `dlq_arn`, `thermal_topic_arn`, `topic_arns`, `no_signal_alarm_arn` |
+| `data` | Las 7 tablas DynamoDB (definiciones en un mapa → `for_each`, GSIs/TTL en bloques `dynamic`) y los ítems de seed desde `scripts/seed-data.json` (las tres filas de `device-config` incluyen `signal_timeout_min`) | `table_names`, `seed_path` | `table_names`, `table_arns`, `table_ids` |
+| `messaging` | Cola `snowball-readings` (visibilidad 180 s, long polling 20 s) + DLQ (`maxReceiveCount = 5`, retención 14 días), tópicos SNS (térmico, sin señal, y batería —reservado, sin publicador—), suscripción por mail con `for_each` sobre los dos tópicos con publicador (térmico y sin señal) más un bloque `moved` desde el `count` anterior, alarma de flota «sin señal» | `names`, `subscription_email` | `queue_url`, `queue_arn`, `dlq_url`, `dlq_arn`, `thermal_topic_arn`, `no_signal_topic_arn`, `topic_arns`, `no_signal_alarm_arn` |
 | `iot-ingest` | Policy `snowball-device-policy` (acota cada dispositivo a sus tópicos con `${iot:Connection.Thing.ThingName}`), un thing + certificado + 2 attachments por unidad (`for_each`), regla `snowball_telemetry` (DynamoDB ×2, SQS, y `error_action` a CloudWatch Logs) | `names`, `units`, `lab_role_arn`, `telemetry_table_name`, `state_table_name` (de `module.data`), `queue_url` | `iot_endpoint`, `certificates`*, `private_keys`*, `certificate_arns`* |
 | `compute` | Subida del bundle de la API a S3, target group, ALB + listener HTTP:80, launch template (user data con `templatefile`, `tag_specifications`, `create_before_destroy`), ASG con `instance_refresh` y `latest_version`, bastión opcional (`count`) | subredes, security groups, bucket de artifacts, `api_bundle_path`, nombres de tablas, `iot_endpoint`, `cors_origin`, `jwt_secret`*, `asg_*`, `tags` | `alb_dns_name`, `target_group_arn`, `launch_template_id`, `bastion_instance_id` |
-| `lambda-function` | Una Lambda (ZIP, `LabRole`, fuera de la VPC) y su log group `/aws/lambda/<nombre>` (retención 14 días). La raíz lo instancia con `for_each` sobre `local.lambdas`: `telemetry-export` (timeout 300 s, 512 MB) y `alert-processor` (timeout 30 s, 256 MB) | `function_name`, `zip_path`, `handler` (default `index.handler`), `runtime` (default `nodejs22.x`), `timeout`, `memory_size`, `environment`, `lab_role_arn`, `log_retention_days` | `function_name`, `arn`, `log_group_name` |
+| `lambda-function` | Una Lambda (ZIP, `LabRole`, fuera de la VPC) y su log group `/aws/lambda/<nombre>` (retención 14 días). La raíz lo instancia con `for_each` sobre `local.lambdas`: `telemetry-export` (timeout 300 s, 512 MB), `alert-processor` (timeout 30 s, 256 MB) y `no-signal-monitor` (timeout 60 s, 256 MB) | `function_name`, `zip_path`, `handler` (default `index.handler`), `runtime` (default `nodejs22.x`), `timeout`, `memory_size`, `environment`, `lab_role_arn`, `log_retention_days` | `function_name`, `arn`, `log_group_name` |
 
 \* sensibles.
 
 ### Módulo externo
 
 `messaging` usa **`terraform-aws-modules/cloudwatch/aws//modules/metric-alarm`**
-(versión `~> 5.0`, del Terraform Registry) para la alarma de «sin señal»: si la
-cola `snowball-readings` no recibe mensajes durante 15 minutos (3 períodos de 5
-min, datos faltantes tratados como incumplimiento), publica en el tópico
-`snowball-no-signal`.
+(versión `~> 5.0`, del Terraform Registry) para la alarma de flota de «sin
+señal»: si la cola `snowball-readings` no recibe mensajes durante 15 minutos (3
+períodos de 5 min, datos faltantes tratados como incumplimiento), publica en el
+tópico `snowball-no-signal`. Es la caída del pipeline completo; el silencio de
+**una** unidad lo detecta la Lambda `snowball-no-signal-monitor`, que publica en
+el mismo tópico.
 
 ### Configuración en la raíz (`main.tf`)
 
@@ -947,10 +1007,18 @@ min, datos faltantes tratados como incumplimiento), publica en el tópico
   `archive_glacier_days` días, 90 por defecto, sobre el prefijo `telemetry/`),
   website del dashboard y su policy de lectura pública (con `depends_on` de la
   configuración website).
-- `module "lambda"` (`for_each = local.lambdas`): las dos Lambdas.
+- `module "lambda"` (`for_each = local.lambdas`): las tres Lambdas.
 - `aws_scheduler_schedule.telemetry_export`: EventBridge Scheduler
   (`schedule_expression`, por defecto todos los días a las 00:15 UTC) →
   Lambda `snowball-telemetry-export`, con `LabRole`.
+- `aws_scheduler_schedule.no_signal_monitor` (`main.tf:176-187`): EventBridge
+  Scheduler (`no_signal_schedule_expression`, por defecto `rate(1 minute)`) →
+  Lambda `snowball-no-signal-monitor`, con `LabRole`, `input = "{}"` y
+  `flexible_time_window { mode = "OFF" }`, copiado del schedule de exportación.
+  Tampoco lleva `aws_lambda_permission`: el Scheduler invoca asumiendo
+  `LabRole`, y el Lab no permite crear recursos de IAM. La granularidad del
+  schedule **es** el error de detección, así que un minuto es lo que mantiene la
+  latencia dentro del requisito de <60 s.
 - `aws_lambda_event_source_mapping.alert_processor`: SQS `snowball-readings` →
   Lambda `snowball-alert-processor`, `batch_size = 10`,
   `function_response_types = ["ReportBatchItemFailures"]` y
@@ -987,9 +1055,12 @@ están en el `README.md` (secciones *Funciones de Terraform utilizadas* y
 | `ami_id` | string | `null` | AMI; si es `null` usa la última Amazon Linux 2023 |
 | `api_bundle_path` | string | `../packages/api/dist/api.bundle.js` | Bundle de la API |
 | `alert_lambda_zip_path` | string | `../packages/alert-processor/dist/alert-processor.zip` | ZIP de la Lambda del procesador de alertas |
+| `no_signal_lambda_zip_path` | string | `../packages/alert-processor/dist/no-signal-monitor.zip` | ZIP de la Lambda del monitor de «sin señal» (segundo bundle del mismo paquete) |
 | `lambda_zip_path` | string | `../packages/telemetry-export/dist/telemetry-export.zip` | ZIP de la Lambda de exportación |
 | `seed_data_path` | string | `../scripts/seed-data.json` | Datos demo de DynamoDB |
 | `schedule_expression` | string | `cron(15 0 * * ? *)` | Cron del export diario (UTC) |
+| `no_signal_schedule_expression` | string | `rate(1 minute)` | Cadencia del barrido de «sin señal»; es el error de detección |
+| `no_signal_timeout_min` | number | `10` | Minutos de silencio por defecto antes de reportar una unidad; validado `>= 1`. Lo sobreescribe por unidad `signal_timeout_min` en `snowball-device-config` |
 | `archive_glacier_days` | number | `90` | Días hasta la transición a Glacier del archivo; validado `>= 30` |
 | `unit_ids` | list(string) | `["SB-001","SB-002","SB-003"]` | Unidades a aprovisionar (things + certificados) |
 
@@ -1005,9 +1076,10 @@ están en el `README.md` (secciones *Funciones de Terraform utilizadas* y
 | `table_names` | Nombres de las tablas DynamoDB |
 | `queue_url` | URL de la cola de lecturas |
 | `dlq_url` | URL de la DLQ |
-| `sns_topic_arns` | Mapa de ARNs de los tópicos SNS: `thermal` (alert-processor), `signal` (alarma «sin señal»), `battery` (reservado, sin publicador) |
-| `lambda_function_names` / `lambda_function_arns` | Mapas `telemetry-export` / `alert-processor` → nombre y ARN de cada Lambda |
+| `sns_topic_arns` | Mapa de ARNs de los tópicos SNS: `thermal` (alert-processor), `signal` (monitor de «sin señal» por unidad + alarma de flota), `battery` (reservado, sin publicador) |
+| `lambda_function_names` / `lambda_function_arns` | Mapas `telemetry-export` / `alert-processor` / `no-signal-monitor` → nombre y ARN de cada Lambda |
 | `telemetry_export_schedule_arn` | ARN del schedule diario de EventBridge Scheduler |
+| `no_signal_schedule_arn` | ARN del schedule del barrido de «sin señal» |
 
 El modelo de datos de las tablas (claves y GSIs) está en
 `docs/dynamodb-model.md`.
@@ -1035,9 +1107,14 @@ defensa.
   claves por fuera o con CSR.
 - **JWT no revocable** hasta que expira (8 h), y el feed en vivo fija las unidades
   permitidas al abrir el WebSocket (ver `README.md`).
-- **La alarma «sin señal» no notifica a nadie.** Publica en un tópico SNS sin
-  suscriptores; solo se ve en CloudWatch. El tópico `snowball-low-battery`
-  existe pero queda reservado: nadie publica en él todavía.
+- **La detección de «sin señal» tiene dos niveles y una ventana de error de un
+  minuto.** La Lambda `snowball-no-signal-monitor` detecta la unidad que se
+  calló y la alarma de CloudWatch `snowball-no-signal-alarm` la caída del
+  pipeline entero; las dos notifican por mail. Lo que queda como limitación es
+  la resolución: el barrido corre cada minuto (`no_signal_schedule_expression`),
+  así que la alerta puede salir hasta ~1 minuto después de cruzado el umbral. El
+  tópico `snowball-low-battery` sí sigue reservado: existe, pero nadie publica
+  en él todavía.
 - **Carrera residual en el procesador de alertas.** Con
   `maximum_concurrency = 2` (el mínimo del *event source mapping*) y una cola
   estándar, dos lotes con lecturas de la misma unidad pueden procesarse a la

@@ -103,6 +103,11 @@ variable "alert_lambda_zip_path" {
   description = "Path to the alert-processor Lambda zip."
   default     = "../packages/alert-processor/dist/alert-processor.zip"
 }
+variable "no_signal_lambda_zip_path" {
+  type        = string
+  description = "Path to the no-signal-monitor Lambda zip (second bundle of the alert-processor package)."
+  default     = "../packages/alert-processor/dist/no-signal-monitor.zip"
+}
 variable "lambda_zip_path" {
   type        = string
   description = "Path to the telemetry-export Lambda zip."
@@ -117,6 +122,20 @@ variable "schedule_expression" {
   type        = string
   description = "EventBridge Scheduler expression for the daily telemetry export."
   default     = "cron(15 0 * * ? *)"
+}
+variable "no_signal_schedule_expression" {
+  type        = string
+  description = "EventBridge Scheduler expression for the per-unit no-signal sweep."
+  default     = "rate(1 minute)"
+}
+variable "no_signal_timeout_min" {
+  type        = number
+  description = "Default minutes of silence before a unit is reported as no-signal (per-unit override: signal_timeout_min in snowball-device-config)."
+  default     = 10
+  validation {
+    condition     = var.no_signal_timeout_min >= 1
+    error_message = "no_signal_timeout_min must be at least 1."
+  }
 }
 variable "archive_glacier_days" {
   type        = number

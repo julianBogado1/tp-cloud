@@ -7,6 +7,13 @@ interface Props {
   onAck: (id: number) => Promise<void>;
 }
 
+/** An unknown severity falls through to its raw slug rather than an empty cell. */
+const SEVERITY_LABEL: Record<string, string> = {
+  'thermal-excursion': 'fuera de rango',
+  'no-signal': 'sin señal',
+  'low-battery': 'batería baja',
+};
+
 export function AlertsTable({ alerts, canAck, onAck }: Props) {
   const [busy, setBusy] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +51,7 @@ export function AlertsTable({ alerts, canAck, onAck }: Props) {
           {alerts.map((a) => (
             <tr key={a.id} className={a.acknowledged_at ? 'acked' : ''}>
               <td>{a.unit_id}</td>
-              <td>{a.severity}</td>
+              <td>{SEVERITY_LABEL[a.severity] ?? a.severity}</td>
               <td>{new Date(a.emitted_at).toLocaleString()}</td>
               <td>{a.duration_min} min</td>
               <td>{a.temp_c !== null ? `${a.temp_c}°C` : '—'}</td>

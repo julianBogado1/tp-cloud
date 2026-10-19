@@ -50,5 +50,20 @@ locals {
         DDB_ALERTS_TABLE                = module.data.table_names.alerts
       }
     }
+    "no-signal-monitor" = {
+      function_name = "snowball-no-signal-monitor"
+      zip_path      = var.no_signal_lambda_zip_path
+      timeout       = 60 # one sweep over snowball-units; the schedule fires every minute
+      memory_size   = 256
+      environment = {
+        SNS_NO_SIGNAL_TOPIC_ARN = module.messaging.no_signal_topic_arn
+        DDB_TABLE               = module.data.table_names.telemetry
+        DDB_STATE_TABLE         = module.data.table_names.state
+        DDB_UNITS_TABLE         = module.data.table_names.units
+        DDB_DEVICE_CONFIG_TABLE = module.data.table_names.config
+        DDB_ALERTS_TABLE        = module.data.table_names.alerts
+        NO_SIGNAL_TIMEOUT_MIN   = tostring(var.no_signal_timeout_min)
+      }
+    }
   }
 }

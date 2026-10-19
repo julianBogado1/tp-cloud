@@ -18,6 +18,8 @@ export interface UnitWithReading {
   setpoint_c: number | null;
   temp_min_c: number | null;
   temp_max_c: number | null;
+  /** minutes without a reading before the card shows "sin señal"; null uses the default */
+  signal_timeout_min: number | null;
   last_reading: IngestedReading | null;
 }
 

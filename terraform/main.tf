@@ -169,6 +169,22 @@ resource "aws_scheduler_schedule" "telemetry_export" {
   }
 }
 
+# Per-unit "no signal" sweep. The schedule granularity is the detection error,
+# so rate(1 minute) keeps the latency inside the <60 s requirement. No
+# aws_lambda_permission: the Scheduler invokes by assuming LabRole.
+resource "aws_scheduler_schedule" "no_signal_monitor" {
+  name                = "snowball-no-signal-monitor"
+  schedule_expression = var.no_signal_schedule_expression
+  flexible_time_window {
+    mode = "OFF"
+  }
+  target {
+    arn      = module.lambda["no-signal-monitor"].arn
+    role_arn = data.aws_iam_role.lab.arn
+    input    = "{}"
+  }
+}
+
 # SQS -> alert-processor. Partial batch responses keep successful messages from
 # being retried; maximum_concurrency = 2 (the minimum) limits concurrent state writes.
 resource "aws_lambda_event_source_mapping" "alert_processor" {

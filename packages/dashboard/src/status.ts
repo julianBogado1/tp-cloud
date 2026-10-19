@@ -3,18 +3,29 @@
 export interface Thresholds {
   temp_min_c: number | null;
   temp_max_c: number | null;
+  /** minutes of silence before the unit is stale; absent falls back to DEFAULT_STALE_MS */
+  signal_timeout_min?: number | null;
 }
 
 export type UnitStatus = 'ok' | 'excursion' | 'stale';
 
-const STALE_MS = 2 * 60_000;
+const DEFAULT_STALE_MS = 2 * 60_000;
+
+/**
+ * The same window the no-signal monitor uses, so the card and the email alert
+ * agree instead of the card crying "sin señal" minutes earlier.
+ */
+function staleMs(thresholds: Thresholds): number {
+  const minutes = thresholds.signal_timeout_min;
+  return typeof minutes === 'number' && minutes > 0 ? minutes * 60_000 : DEFAULT_STALE_MS;
+}
 
 export function readingStatus(
   reading: { ts: string; temp_c: number } | null,
   thresholds: Thresholds,
   nowMs: number,
 ): UnitStatus {
-  if (!reading || nowMs - Date.parse(reading.ts) > STALE_MS) return 'stale';
+  if (!reading || nowMs - Date.parse(reading.ts) > staleMs(thresholds)) return 'stale';
   const { temp_min_c, temp_max_c } = thresholds;
   if (temp_min_c !== null && reading.temp_c < temp_min_c) return 'excursion';
   if (temp_max_c !== null && reading.temp_c > temp_max_c) return 'excursion';

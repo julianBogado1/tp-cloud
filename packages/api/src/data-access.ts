@@ -16,6 +16,8 @@ export interface UnitRow {
   setpoint_c: number | null;
   temp_min_c: number | null;
   temp_max_c: number | null;
+  /** minutes without a reading before the unit counts as silent; null falls back to the dashboard default */
+  signal_timeout_min: number | null;
 }
 
 export interface AlertRow {

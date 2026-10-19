@@ -24,7 +24,10 @@ simulator (local) ──MQTT/TLS──▶ IoT Core · regla snowball_telemetry
                                   │      └──▶ DynamoDB (device-config, units, alerts, estado de excursión)
                                   └─▶ solo si falla una acción (error_action): CloudWatch Logs /aws/iot/snowball-iot-errors
 MONITOREO
-CloudWatch alarm (la cola no recibe nada en 15 min) ──▶ SNS snowball-no-signal
+EventBridge Scheduler (rate(1 minute)) ──▶ Lambda snowball-no-signal-monitor (barrido por unidad)
+                                             ├──▶ DynamoDB (units, unit-state, device-config, alerts, estado de señal)
+                                             └──▶ SNS snowball-no-signal ──▶ mail
+CloudWatch alarm (la cola no recibe nada en 15 min) ──▶ SNS snowball-no-signal ──▶ mail
 ARCHIVO
 EventBridge Scheduler (diario 00:15 UTC) ──▶ Lambda snowball-telemetry-export ──▶ S3 snowball-archive
                                               (telemetry/aaaa/mm/dd/*.ndjson.gz ──▶ Glacier a los 90 d)
@@ -38,6 +41,15 @@ guardó, y el feed en vivo del WebSocket lo resuelve consultando DynamoDB solo
 por las unidades que los dashboards conectados están mirando. La última lectura
 sale de `snowball-unit-state` y el historial de `snowball-telemetry`.
 
+La detección de «sin señal» tiene dos niveles, y son dos modos de falla
+distintos: la Lambda `snowball-no-signal-monitor` se despierta cada minuto y
+compara el `ts` de la última lectura de cada unidad contra el umbral de esa
+unidad (`signal_timeout_min` en `snowball-device-config`, con fallback a
+`NO_SIGNAL_TIMEOUT_MIN`), así detecta **la unidad que se calló**; la alarma de
+CloudWatch `snowball-no-signal-alarm` mira la cola de lecturas y detecta **la
+caída del pipeline** (ninguna unidad llega). Las dos publican en
+`snowball-no-signal`, que ahora sí tiene suscripción por mail.
+
 ## Documentación
 
 | Documento | Para qué |
@@ -46,6 +58,7 @@ sale de `snowball-unit-state` y el historial de `snowball-telemetry`.
 | [`docs/dynamodb-model.md`](docs/dynamodb-model.md) | Modelo de tablas DynamoDB: claves, GSIs y qué consulta cubre cada uno |
 | [`docs/terraform-buckets-learner-lab.md`](docs/terraform-buckets-learner-lab.md) | Por qué los buckets se crean por script y no por Terraform |
 | [`docs/features-faltantes-propuesta.md`](docs/features-faltantes-propuesta.md) | Relevamiento de lo que falta respecto de la propuesta formal de la Entrega 1 (features, multi-región y requisitos no funcionales) |
+| [`docs/plan-sin-senal.md`](docs/plan-sin-senal.md) | Plan y decisiones de diseño de la alerta de «sin señal» por unidad (incluye la alternativa descartada de una alarma de CloudWatch por unidad) |
 | [`docs/infra-aws-consola.md`](docs/infra-aws-consola.md) | Guía histórica de la Entrega 2 (todo a mano desde la consola, todavía con RDS y con el alert-processor en EC2). Solo se le agregó un aviso al comienzo |
 
 ## Estructura
@@ -54,7 +67,7 @@ sale de `snowball-unit-state` y el historial de `snowball-telemetry`.
 |---|---|---|
 | `packages/shared` | Tipos del dominio + nombres de recursos (`NAMES`, única fuente de verdad del código; se _bundlea_ dentro de cada artefacto) | — |
 | `packages/simulator` | Unidades de frío simuladas: cliente MQTT con certificado X.509, escenarios de excursión/silencio, Device Shadow | **local** |
-| `packages/alert-processor` | Consumidor de SQS: máquina de estados de excursión, umbrales y alertas en DynamoDB, notificaciones SNS. Stateless (el estado de excursión vive en DynamoDB). `src/handler.ts` es el handler de Lambda; `src/index.ts` es el loop de long-polling para correrlo local (`npm run alert-processor`); ambos comparten `src/process.ts` | Lambda (event source mapping de SQS), ZIP de un solo archivo |
+| `packages/alert-processor` | Dos artefactos del mismo paquete, los dos stateless (el estado vive en DynamoDB). **Excursión térmica:** consumidor de SQS con máquina de estados, umbrales y alertas en DynamoDB y notificación SNS; `src/handler.ts` es el handler de Lambda, `src/index.ts` el loop de long-polling para correrlo local (`npm run alert-processor`) y ambos comparten `src/process.ts`. **Sin señal por unidad:** `src/no-signal-handler.ts` barre `snowball-units`, compara el silencio de cada unidad contra su `signal_timeout_min` con la máquina de estados pura de `src/silence.ts`, y emite alerta y aviso de recuperación | Dos Lambdas: event source mapping de SQS (`alert-processor.zip`) y EventBridge Scheduler (`no-signal-monitor.zip`) |
 | `packages/api` | REST + WebSocket (`/live`) para el dashboard: login con JWT propio (`/auth`), roles operador/supervisor/admin con alcance por cliente, lectura de unidades/alertas/telemetría, acknowledgement de alertas, configuración remota vía Device Shadow y ABM de usuarios. Acceso a datos por repositorios DynamoDB. Stateless | EC2 (Auto Scaling Group), artefacto de un solo archivo |
 | `packages/telemetry-export` | Lambda diaria: copia el histórico del día anterior de DynamoDB a S3 (`.ndjson.gz` por unidad) para el archivo en Glacier. También corre local (`npm run export`) | Lambda (EventBridge Scheduler) |
 | `packages/dashboard` | Frontend React (Vite): tarjetas por unidad con feed en vivo, historial y alertas. Compila a archivos 100 % estáticos | S3 static website |
@@ -80,7 +93,7 @@ bash scripts/bootstrap-buckets.sh <sufijo> <bucket-de-state>
 #    el bucket de state NO es una variable: solo se pasa al init del paso 4)
 cp terraform/terraform.tfvars.example terraform/terraform.tfvars   # y completarlo
 
-# 3. Artefactos: bundle de la API (Terraform lo sube a S3) y ZIPs de las dos Lambdas
+# 3. Artefactos: bundle de la API (Terraform lo sube a S3) y ZIPs de las tres Lambdas
 npm run bundle
 
 # 4. Terraform
@@ -124,10 +137,10 @@ terraform/
 └── modules/
     ├── network/              # VPC, subredes, NAT, rutas, endpoints, security groups
     ├── data/                 # tablas DynamoDB + seed
-    ├── messaging/            # SQS + DLQ, SNS, alarma «sin señal» (módulo externo)
+    ├── messaging/            # SQS + DLQ, SNS, suscripciones, alarma «sin señal» (módulo externo)
     ├── iot-ingest/           # IoT Core: policy, things, certificados, regla + error action
     ├── compute/              # bundle de la API en S3, ALB, launch template, ASG, bastión opcional
-    └── lambda-function/      # Lambda genérica + log group (se instancia 2 veces con for_each)
+    └── lambda-function/      # Lambda genérica + log group (se instancia 3 veces con for_each)
 ```
 
 No hay directorio `terraform/bootstrap/`: los buckets (incluido el del state)
@@ -141,10 +154,10 @@ los crea `scripts/bootstrap-buckets.sh` antes del `init` (ver abajo por qué).
 |---|---|
 | `network` | VPC `10.0.0.0/16`; 2 subredes públicas y 2 de aplicación (en `us-east-1a`/`us-east-1b`) derivadas con `cidrsubnet`; Internet Gateway; un NAT Gateway; tablas de ruteo; gateway endpoints de S3 y DynamoDB; security groups `sg-alb` → `sg-app` ← `sg-bastion` encadenados por referencia (ninguno abre un rango de IPs cuando puede referenciar otro grupo) |
 | `data` | Las 7 tablas DynamoDB (`telemetry`, `unit-state`, `users`, `clients`, `units`, `alerts`, `device-config`) a partir de un único mapa de definiciones, con GSIs y TTL en bloques `dynamic`, y la carga de datos demo desde `scripts/seed-data.json` |
-| `messaging` | Cola `snowball-readings` (visibilidad 180 s) con DLQ (5 recepciones), tópicos SNS (térmico, sin señal y batería —reservado, sin publicador—), suscripción por mail y alarma de «sin señal» |
+| `messaging` | Cola `snowball-readings` (visibilidad 180 s) con DLQ (5 recepciones), tópicos SNS (térmico, sin señal y batería —reservado, sin publicador—), suscripción por mail a los dos tópicos con publicador (térmico y sin señal, con `for_each`) y alarma de flota «sin señal» |
 | `iot-ingest` | Policy `snowball-device-policy` (cada dispositivo solo ve sus tópicos), thing + certificado X.509 por unidad y regla `snowball_telemetry` con acciones a DynamoDB (×2) y SQS, más `error_action` a CloudWatch Logs |
 | `compute` | Subida del bundle de la API a S3, target group, ALB, launch template con user data (`templatefile`) y `tag_specifications`, Auto Scaling Group (2–4 `t3.small` por defecto, en subredes privadas) con *instance refresh* automático, y bastión opcional. Las EC2 corren **solo la API** |
-| `lambda-function` | Lambda genérica (ZIP, `nodejs22.x`, `LabRole`, fuera de la VPC) con su log group. La raíz la instancia con `for_each` sobre `local.lambdas`: `telemetry-export` y `alert-processor` |
+| `lambda-function` | Lambda genérica (ZIP, `nodejs22.x`, `LabRole`, fuera de la VPC) con su log group. La raíz la instancia con `for_each` sobre `local.lambdas`: `telemetry-export`, `alert-processor` y `no-signal-monitor` |
 
 **Módulo externo** (Terraform Registry): `terraform-aws-modules/cloudwatch/aws//modules/metric-alarm`
 (`~> 5.0`), usado en `messaging` para la alarma que se dispara si la cola de
@@ -157,6 +170,9 @@ La raíz (`main.tf`) además administra:
   90 días por defecto), website y policy pública del dashboard;
 - el schedule diario `aws_scheduler_schedule.telemetry_export` (EventBridge
   Scheduler → Lambda `snowball-telemetry-export`);
+- el schedule del barrido `aws_scheduler_schedule.no_signal_monitor`
+  (EventBridge Scheduler → Lambda `snowball-no-signal-monitor`,
+  `no_signal_schedule_expression`, `rate(1 minute)` por defecto);
 - el `aws_lambda_event_source_mapping.alert_processor` (SQS
   `snowball-readings` → Lambda `snowball-alert-processor`, lotes de 10,
   `ReportBatchItemFailures`, `maximum_concurrency = 2`);
@@ -180,17 +196,21 @@ tienen además `validation`. Cambios de esta entrega:
 - **Nuevas variables:** `cors_origin` (default `*`, para que la cátedra pueda
   usar el dashboard desde localhost u otro origen), `archive_glacier_days`
   (default `90`, mínimo `30`), `asg_min_size` / `asg_max_size` /
-  `asg_desired_capacity` (defaults `2` / `4` / `2`) y `alert_lambda_zip_path`
-  (ZIP de la Lambda del procesador).
+  `asg_desired_capacity` (defaults `2` / `4` / `2`), `alert_lambda_zip_path`
+  (ZIP de la Lambda del procesador) y las tres del barrido de «sin señal»:
+  `no_signal_lambda_zip_path`, `no_signal_schedule_expression` (default
+  `rate(1 minute)`) y `no_signal_timeout_min` (default `10`, mínimo `1`; es el
+  fallback para las unidades sin `signal_timeout_min` propio).
 - **Eliminadas:** `state_bucket_name` (el bucket de state solo se usa en
   `terraform init -backend-config`; en el CI sigue existiendo
   `TF_VAR_state_bucket_name` para el script y el `init`, pero no es una
   variable de Terraform) y `alert_bundle_path` (el procesador ya no corre en
   EC2). También se quitó el provider `random`, que no se usaba.
 - **Nuevos outputs:** `dlq_url`, `sns_topic_arns`, `lambda_function_names`,
-  `lambda_function_arns` y `telemetry_export_schedule_arn` (además de los que ya
-  estaban: `vpc_id`, `alb_dns_name`, buckets, `iot_endpoint`, certificados,
-  `table_names`, `queue_url`).
+  `lambda_function_arns`, `telemetry_export_schedule_arn` y
+  `no_signal_schedule_arn` (además de los que ya estaban: `vpc_id`,
+  `alb_dns_name`, buckets, `iot_endpoint`, certificados, `table_names`,
+  `queue_url`).
 
 ### Funciones de Terraform utilizadas
 
@@ -200,7 +220,7 @@ entrega.)
 | Función | Dónde | Para qué |
 |---|---|---|
 | `cidrsubnet` | `modules/network/main.tf:3-6` | Deriva los CIDR de las 4 subredes a partir del CIDR de la VPC |
-| `toset` | `locals.tf:22`, `main.tf:35`, `modules/network/main.tf:47,63` | Convierte listas en conjuntos para usarlas con `for_each` (unidades, buckets privados, asociaciones de subredes) |
+| `toset` | `locals.tf:22`, `main.tf:35`, `modules/messaging/main.tf:21`, `modules/network/main.tf:47,63` | Convierte listas en conjuntos para usarlas con `for_each` (unidades, buckets privados, tópicos con suscripción por mail, asociaciones de subredes) |
 | `jsonencode` | `main.tf:94`, `modules/iot-ingest/main.tf:8`, `modules/messaging/main.tf:9`, `modules/data/main.tf:74` | Arma la policy del bucket del dashboard, la policy de IoT, la redrive policy de SQS y los ítems del seed |
 | `file` + `jsondecode` | `modules/data/main.tf:11` | Lee y parsea `scripts/seed-data.json` |
 | `merge` | `modules/data/main.tf:12`, `modules/compute/main.tf:80,84` | Une los ítems del seed de distintas entidades en un único mapa; agrega `Name` a los tags comunes de instancias y volúmenes del ASG |
@@ -209,7 +229,8 @@ entrega.)
 | `templatefile` + `base64encode` | `modules/compute/main.tf:62` | Renderiza el user data de las EC2 con nombres de tablas, endpoint de IoT, origen CORS y secretos |
 | `filemd5` | `modules/compute/main.tf:21,65` | Detecta cambios en el bundle de la API: vuelve a subirlo a S3 y, al renderizarse en el user data, genera una versión nueva del launch template que dispara el *instance refresh* |
 | `filebase64sha256` | `modules/lambda-function/main.tf:10` | Detecta cambios en el ZIP de cada Lambda |
-| `format` | `modules/messaging/main.tf:30` | Arma el nombre de la alarma |
+| `format` | `modules/messaging/main.tf:41` | Arma el nombre de la alarma |
+| `tostring` | `locals.tf:66` | Pasa `no_signal_timeout_min` (número) al environment de la Lambda, que solo acepta strings |
 | `can` + `cidrhost` | `variables.tf:30` | Validación de `vpc_cidr` (tiene que ser un CIDR IPv4 válido) |
 | `can` + `regex` | `variables.tf:61` | Validación de `sns_subscription_email` |
 
@@ -217,14 +238,17 @@ entrega.)
 
 | Meta-argumento | Dónde | Para qué |
 |---|---|---|
-| `for_each` | `main.tf:35,149`; `modules/data/main.tf:20,70`; `modules/iot-ingest/main.tf:38,42,46,51`; `modules/network/main.tf:16,47,52,57,63,69`; `modules/messaging/main.tf:13` | Una instancia por bucket privado, por Lambda (`module "lambda"` sobre `local.lambdas`), por tabla y por ítem del seed, por unidad IoT (thing + certificado + attachments), por subred, por ruta, por endpoint y por tópico SNS, sin repetir código |
-| `count` | `modules/compute/main.tf:113`, `modules/messaging/main.tf:17` | Bastión opcional (`enable_bastion`) y suscripción de mail opcional |
+| `for_each` | `main.tf:35,149`; `modules/data/main.tf:20,70`; `modules/iot-ingest/main.tf:38,42,46,51`; `modules/network/main.tf:16,47,52,57,63,69`; `modules/messaging/main.tf:14,21` | Una instancia por bucket privado, por Lambda (`module "lambda"` sobre `local.lambdas`), por tabla y por ítem del seed, por unidad IoT (thing + certificado + attachments), por subred, por ruta, por endpoint, por tópico SNS y por suscripción de mail (los dos tópicos con publicador), sin repetir código |
+| `count` | `modules/compute/main.tf:113` | Bastión opcional (`enable_bastion`) |
 | `depends_on` | `main.tf:103`; `modules/network/main.tf:34`; `modules/data/main.tf:75`; `modules/compute/main.tf:89`; `modules/lambda-function/main.tf:21` | Orden explícito donde Terraform no lo infiere: policy tras el website, NAT tras el IGW, seed tras las tablas, launch template tras el bundle, Lambda tras su log group (si no, una invocación temprana crearía el grupo sin retención) |
 | `lifecycle` | `modules/compute/main.tf:86-88` | `create_before_destroy` en el launch template, para que su reemplazo no deje al ASG sin plantilla |
 
 Además se usan bloques `dynamic` (`modules/data/main.tf:29-65`) para generar
-atributos, GSIs y TTL a partir de datos, y bloques `moved` (`main.tf:184-195`)
-para la migración de `module.export` a `module.lambda`.
+atributos, GSIs y TTL a partir de datos, y bloques `moved`: `main.tf:201-212`
+para la migración de `module.export` a `module.lambda`, y
+`modules/messaging/main.tf:29-32` para que el pase de `count` a `for_each` en la
+suscripción por mail no destruya la del tópico térmico (si no, habría que
+reconfirmar el mail).
 
 A propósito **no** hay `depends_on` a nivel de módulo (por ejemplo en
 `module "compute"`): difiere los `data` sources de adentro del módulo
@@ -244,7 +268,7 @@ outputs que se pasan (`module.data.table_names`, `module.iot_ingest.iot_endpoint
   se pasa a los módulos; en el código TypeScript es `packages/shared/src/config.ts`
   (`NAMES`).
 - **Mapas + `for_each`** en lugar de recursos copiados: las 7 tablas, las
-  unidades IoT, la red y las dos Lambdas (un único módulo `lambda-function`)
+  unidades IoT, la red y las tres Lambdas (un único módulo `lambda-function`)
   salen de estructuras de datos.
 - **Tags comunes** por `default_tags` del provider (`locals.common_tags`).
 - **Sin valores hardcodeados**: sufijo de buckets, mail, IP del bastión, JWT,
@@ -268,7 +292,7 @@ outputs que se pasan (`module.data.table_names`, `module.iot_ingest.iot_endpoint
 
 La composite action `.github/actions/terraform-setup` verifica secrets,
 variables y credenciales, genera los artefactos (`npm run bundle`: bundle de la
-API y ZIPs de las dos Lambdas), crea los buckets con
+API y ZIPs de las tres Lambdas), crea los buckets con
 `scripts/bootstrap-buckets.sh` (**solo** en `workflow_dispatch`) e inicializa
 el backend remoto. `concurrency` evita dos ejecuciones simultáneas sobre el
 mismo state.
@@ -336,8 +360,9 @@ siguiendo estos criterios (todavía no está actualizado).
 - Reflejará además los cambios de esta entrega: sin RDS ni capa de datos en la
   VPC, la Lambda `snowball-alert-processor` fuera de la VPC
   (SQS → Lambda → SNS + DynamoDB), EventBridge Scheduler → Lambda
-  `snowball-telemetry-export` → S3, la *error action* de IoT a CloudWatch, la
-  alarma «sin señal» y el bastión marcado como opcional.
+  `snowball-telemetry-export` → S3 y → Lambda `snowball-no-signal-monitor` →
+  SNS, la *error action* de IoT a CloudWatch, la alarma de flota «sin señal» y
+  el bastión marcado como opcional.
 
 <!-- TODO: exportar el diagrama de Lucid a docs/architecture.png y embeberlo acá:
 ![Arquitectura de Snowball](docs/architecture.png)
@@ -458,6 +483,12 @@ idempotente de alertas (una carrera no duplica filas de alerta).
 - Pipeline de GitHub Actions (init, validate, plan, apply, destroy).
 - Alarma CloudWatch de «sin señal» (pendiente en la Entrega 2) sobre la cola de
   lecturas.
+- Detección de «sin señal» **por unidad**: Lambda `snowball-no-signal-monitor`
+  agendada con EventBridge Scheduler, umbral por unidad
+  (`signal_timeout_min` en `snowball-device-config`), alerta en
+  `snowball-alerts` con severidad `no-signal`, aviso de recuperación cuando la
+  unidad vuelve a reportar, y suscripción por mail al tópico
+  `snowball-no-signal` (antes no tenía ninguna).
 - Scripts para el Learner Lab: creación y borrado de buckets y exportación de
   certificados IoT.
 - Bastión **opcional** (`enable_bastion`, apagado por defecto): ya no hace falta
@@ -520,6 +551,4 @@ el certificado), agregar sus entradas en `scripts/seed-data.json` (`units` y
 
 - Alertas de batería baja (`snowball-low-battery`): el tópico existe y queda
   **reservado**, pero ningún componente publica en él todavía.
-- Suscriptores para el tópico `snowball-no-signal` (la alarma se dispara y se
-  ve en CloudWatch, pero no notifica a nadie).
 - HTTPS de punta a punta (requiere dominio y certificado ACM).

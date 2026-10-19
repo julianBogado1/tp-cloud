@@ -68,7 +68,8 @@
         "setpoint_c": { "N": "-18" },
         "temp_min_c": { "N": "-25" },
         "temp_max_c": { "N": "-15" },
-        "tolerance_min": { "N": "5" }
+        "tolerance_min": { "N": "5" },
+        "signal_timeout_min": { "N": "10" }
       }
     },
     {
@@ -78,7 +79,8 @@
         "setpoint_c": { "N": "-18" },
         "temp_min_c": { "N": "-25" },
         "temp_max_c": { "N": "-15" },
-        "tolerance_min": { "N": "5" }
+        "tolerance_min": { "N": "5" },
+        "signal_timeout_min": { "N": "10" }
       }
     },
     {
@@ -88,7 +90,8 @@
         "setpoint_c": { "N": "5" },
         "temp_min_c": { "N": "2" },
         "temp_max_c": { "N": "8" },
-        "tolerance_min": { "N": "1" }
+        "tolerance_min": { "N": "1" },
+        "signal_timeout_min": { "N": "10" }
       }
     }
   ],

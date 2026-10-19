@@ -32,6 +32,19 @@ describe('DynamoDB data repository', () => {
     expect(await dataAccess.unitInScope('SB-001', { all: true })).toBe(false);
   });
 
+  test('listUnits merges the device-config thresholds and nulls the ones the row lacks', async () => {
+    send.mockResolvedValueOnce({ Items: [
+      { unit_id: 'SB-001', client_id: 1, description: 'Reefer BA-MDQ', active: true },
+      { unit_id: 'SB-002', client_id: 1, active: true },
+    ] });
+    send.mockResolvedValueOnce({ Item: { unit_id: 'SB-001', setpoint_c: '-18', temp_min_c: '-25', temp_max_c: '-15', signal_timeout_min: '10' } });
+    send.mockResolvedValueOnce({}); // SB-002 has no device-config row at all
+    await expect(dataAccess.listUnits({ all: true })).resolves.toEqual([
+      { unit_id: 'SB-001', description: 'Reefer BA-MDQ', active: true, setpoint_c: -18, temp_min_c: -25, temp_max_c: -15, signal_timeout_min: 10 },
+      { unit_id: 'SB-002', description: null, active: true, setpoint_c: null, temp_min_c: null, temp_max_c: null, signal_timeout_min: null },
+    ]);
+  });
+
   test('getConfig reads and normalizes numeric DynamoDB attributes', async () => {
     send.mockResolvedValueOnce({ Item: { unit_id: 'SB-001', setpoint_c: '-18', temp_min_c: '-25', temp_max_c: '-15', tolerance_min: '5' } });
     await expect(dataAccess.getConfig('SB-001')).resolves.toEqual({

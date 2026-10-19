@@ -39,6 +39,8 @@ export interface ThresholdConfig {
   /** minutes the deviation must be sustained before alerting */
   tolerance_min: number;
   setpoint_c: number;
+  /** minutes without a reading before the unit counts as silent; the monitor falls back to NO_SIGNAL_TIMEOUT_MIN */
+  signal_timeout_min?: number;
 }
 
 export type ExcursionPhase = 'ok' | 'deviated' | 'alerted';
@@ -47,6 +49,17 @@ export interface ExcursionState {
   phase: ExcursionPhase;
   /** ISO-8601: instant of the first out-of-range reading of the ongoing excursion */
   since?: string;
+}
+
+export type SignalPhase = 'ok' | 'silent';
+
+/** Persisted as the `_signal` item of the telemetry table, next to `_state`. */
+export interface SignalState {
+  phase: SignalPhase;
+  /** ISO-8601: instant the silence started — the last reading's ts */
+  since?: string;
+  /** ISO-8601: first sweep that saw the unit, set only when it never reported */
+  observed_at?: string;
 }
 
 export type AlertSeverity = 'thermal-excursion' | 'low-battery' | 'no-signal';
@@ -59,8 +72,23 @@ export interface Alert {
   /** instant the tolerance was exceeded and the alert was emitted */
   ts: string;
   duration_min: number;
-  temp_c: number;
-  lat: number;
-  lon: number;
+  /** last known values; null only for a no-signal alert on a unit that never reported */
+  temp_c: number | null;
+  lat: number | null;
+  lon: number | null;
+  detail: string;
+}
+
+/**
+ * A silent unit started reporting again. Published to the no-signal topic, but
+ * never written to the alerts table: it is not an alert.
+ */
+export interface SignalRecovery {
+  unit_id: string;
+  /** instant the silence started */
+  since: string;
+  /** ts of the reading that ended the silence */
+  ts: string;
+  silent_min: number;
   detail: string;
 }

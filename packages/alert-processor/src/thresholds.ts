@@ -24,6 +24,7 @@ export async function getThreshold(unitId: string): Promise<ThresholdConfig | nu
     temp_max_c: Number(Item.temp_max_c),
     tolerance_min: Number(Item.tolerance_min),
     setpoint_c: Number(Item.setpoint_c),
+    ...(Item.signal_timeout_min === undefined ? {} : { signal_timeout_min: Number(Item.signal_timeout_min) }),
   } : null;
   cache.set(unitId, { config, expiresAt: now + CACHE_TTL_MS });
   return config;
@@ -41,14 +42,18 @@ export async function getUnit(unitId: string): Promise<Unit | null> {
  * Idempotent insert: the id is derived from unit_id + since, so a retry of the
  * same excursion hits `attribute_not_exists(id)` and is treated as done.
  * Returns false when the row already existed.
+ *
+ * `idSeed` is passed through to `alertId` to keep two alert kinds that share a
+ * `since` from colliding; thermal excursions omit it so their ids are stable.
  */
 export async function insertAlert(alert: {
-  unit_id: string; severity: string; since: string; ts: string; duration_min: number; temp_c: number; detail: string;
-}, unit: Unit): Promise<boolean> {
+  unit_id: string; severity: string; since: string; ts: string; duration_min: number;
+  temp_c: number | null; detail: string;
+}, unit: Unit, idSeed?: string): Promise<boolean> {
   try {
     await ddb.send(new PutCommand({
       TableName: alertsTable,
-      Item: { id: alertId(alert.unit_id, alert.since), ...alert, client_id: unit.client_id, emitted_at: alert.ts, acknowledged_by: null, acknowledged_at: null },
+      Item: { id: alertId(alert.unit_id, alert.since, idSeed), ...alert, client_id: unit.client_id, emitted_at: alert.ts, acknowledged_by: null, acknowledged_at: null },
       ConditionExpression: 'attribute_not_exists(id)',
     }));
     return true;
