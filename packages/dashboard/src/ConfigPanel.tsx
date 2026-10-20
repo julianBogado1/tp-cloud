@@ -1,6 +1,16 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import type { ThresholdConfig } from '@snowball/shared';
-import { fetchShadow, updateConfig, type ConfigPatch, type ShadowState, type UnitWithReading } from './api';
+import { DEVICE_CONFIG_FIELDS, type DeviceConfig, type ThresholdConfig } from '@snowball/shared';
+import { ApiError, fetchShadow, updateConfig, type ConfigPatch, type ShadowState, type UnitWithReading } from './api';
+import {
+  FIELD_LABELS,
+  hasPending,
+  saveOutcomeMessage,
+  SHADOW_POLL_MAX_ATTEMPTS,
+  SHADOW_POLL_MS,
+  shadowRows,
+  shouldKeepPolling,
+  type SaveOutcome,
+} from './shadow-diff';
 
 interface Props {
   unit: UnitWithReading;
@@ -8,18 +18,33 @@ interface Props {
   onSaved: (config: ThresholdConfig) => void;
 }
 
-/**
- * Setpoint + thresholds of the selected unit. Shows the Device Shadow's
- * desired vs reported setpoint so the operator sees whether the unit has
- * applied the last order (spec §4 of the PDF).
- */
-export function ConfigPanel({ unit, editable, onSaved }: Props) {
-  const [form, setForm] = useState({
+/** Form state now covers all four fields. */
+type ConfigForm = DeviceConfig;
+
+function formFromUnit(unit: UnitWithReading): ConfigForm {
+  return {
     setpoint_c: unit.setpoint_c ?? 0,
     temp_min_c: unit.temp_min_c ?? 0,
     temp_max_c: unit.temp_max_c ?? 0,
-  });
+    tolerance_min: unit.tolerance_min ?? 0,
+  };
+}
+
+function outcomeOf(err: unknown): SaveOutcome {
+  if (err instanceof ApiError && err.status === 502) return { kind: 'shadow-failed' };
+  return { kind: 'error', message: (err as Error).message };
+}
+
+/**
+ * Setpoint + thresholds of the selected unit. Shows the Device Shadow's
+ * desired vs reported value of every field so the operator sees whether the
+ * unit has applied the last order (spec §4 of the PDF), and re-reads the
+ * shadow while any field is pending, giving up after 2 min.
+ */
+export function ConfigPanel({ unit, editable, onSaved }: Props) {
+  const [form, setForm] = useState<ConfigForm>(() => formFromUnit(unit));
   const [shadow, setShadow] = useState<ShadowState | null | 'unavailable'>(null);
+  const [attempts, setAttempts] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -29,6 +54,8 @@ export function ConfigPanel({ unit, editable, onSaved }: Props) {
   // twice for the same save (submit() already refreshes it once).
   useEffect(() => {
     setMessage(null);
+    setShadow(null);
+    setAttempts(0);
     let cancelled = false;
     fetchShadow(unit.unit_id).then(
       (s) => { if (!cancelled) setShadow(s); },
@@ -37,39 +64,55 @@ export function ConfigPanel({ unit, editable, onSaved }: Props) {
     return () => { cancelled = true; };
   }, [unit.unit_id]);
 
+  // While some field is pending, re-read the shadow every SHADOW_POLL_MS.
+  // Each fetch produces a new `shadow`, which re-runs this effect.
+  useEffect(() => {
+    if (shadow === 'unavailable' || !shouldKeepPolling(shadow, attempts)) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      fetchShadow(unit.unit_id).then(
+        (s) => { if (!cancelled) { setShadow(s); setAttempts((n) => n + 1); } },
+        () => { if (!cancelled) setShadow('unavailable'); },
+      );
+    }, SHADOW_POLL_MS);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [unit.unit_id, shadow, attempts]);
+
   // Keeps the form synced to the unit's persisted values, including right
   // after a save changes them (via onSaved → App's units state → this prop).
   useEffect(() => {
-    setForm({ setpoint_c: unit.setpoint_c ?? 0, temp_min_c: unit.temp_min_c ?? 0, temp_max_c: unit.temp_max_c ?? 0 });
-  }, [unit.unit_id, unit.setpoint_c, unit.temp_min_c, unit.temp_max_c]);
+    setForm(formFromUnit(unit));
+  }, [unit.unit_id, unit.setpoint_c, unit.temp_min_c, unit.temp_max_c, unit.tolerance_min]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     setMessage(null);
     const patch: ConfigPatch = {};
-    if (form.setpoint_c !== unit.setpoint_c) patch.setpoint_c = form.setpoint_c;
-    if (form.temp_min_c !== unit.temp_min_c) patch.temp_min_c = form.temp_min_c;
-    if (form.temp_max_c !== unit.temp_max_c) patch.temp_max_c = form.temp_max_c;
+    for (const key of DEVICE_CONFIG_FIELDS) {
+      if (form[key] !== unit[key]) patch[key] = form[key];
+    }
     if (Object.keys(patch).length === 0) { setBusy(false); setMessage('Sin cambios'); return; }
     try {
       const saved = await updateConfig(unit.unit_id, patch);
       onSaved(saved);
-      setMessage(saved.warning ? 'Guardado en base, pero no se pudo enviar al equipo (shadow)' : 'Guardado');
+      setMessage(saveOutcomeMessage({ kind: saved.warning === 'shadow not configured' ? 'saved-db-only' : 'saved' }));
+      setAttempts(0);
       fetchShadow(unit.unit_id).then(setShadow, () => setShadow('unavailable'));
     } catch (err) {
-      setMessage((err as Error).message);
+      setMessage(saveOutcomeMessage(outcomeOf(err)));
     } finally {
       setBusy(false);
     }
   }
 
-  const field = (key: keyof typeof form, label: string) => (
+  const field = (key: keyof ConfigForm, step = '0.5', min?: string) => (
     <label>
-      {label}
+      {FIELD_LABELS[key]}
       <input
         type="number"
-        step="0.5"
+        step={step}
+        min={min}
         value={form[key]}
         disabled={!editable}
         onChange={(e) => setForm({ ...form, [key]: Number(e.target.value) })}
@@ -77,23 +120,42 @@ export function ConfigPanel({ unit, editable, onSaved }: Props) {
     </label>
   );
 
+  const gaveUp = shadow !== null && shadow !== 'unavailable' && hasPending(shadow) && attempts >= SHADOW_POLL_MAX_ATTEMPTS;
+
   return (
     <form className="form config" onSubmit={submit}>
       <h3>Configuración</h3>
-      {field('setpoint_c', 'Setpoint (°C)')}
-      {field('temp_min_c', 'Mínimo (°C)')}
-      {field('temp_max_c', 'Máximo (°C)')}
-      <p className="muted">
+      {field('setpoint_c')}
+      {field('temp_min_c')}
+      {field('temp_max_c')}
+      {field('tolerance_min', '1', '0')}
+      <div className="muted">
         Equipo:{' '}
         {shadow === null && 'consultando…'}
         {shadow === 'unavailable' && 'sin datos del shadow'}
         {shadow && shadow !== 'unavailable' && (
-          <>
-            deseado {shadow.desired.setpoint_c ?? '—'}° · aplicado {shadow.reported.setpoint_c ?? '—'}°
-            {shadow.desired.setpoint_c !== undefined && shadow.desired.setpoint_c !== shadow.reported.setpoint_c && ' (pendiente)'}
-          </>
+          <table className="shadow">
+            <thead>
+              <tr><th>Campo</th><th>Deseado</th><th>Aplicado</th><th /></tr>
+            </thead>
+            <tbody>
+              {shadowRows(shadow).map((row) => (
+                <tr key={row.field}>
+                  <td>{row.label}</td>
+                  <td>{row.desired ?? '—'}</td>
+                  <td>{row.reported ?? '—'}</td>
+                  <td>{row.pending && <span className="badge badge-stale">pendiente</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
-      </p>
+      </div>
+      {gaveUp && (
+        <p className="muted">
+          El equipo todavía no confirmó: puede estar desconectado. La orden queda guardada y se aplica al reconectar.
+        </p>
+      )}
       {editable && <button className="primary" type="submit" disabled={busy}>{busy ? 'Guardando…' : 'Guardar'}</button>}
       {message && <p className="muted">{message}</p>}
     </form>

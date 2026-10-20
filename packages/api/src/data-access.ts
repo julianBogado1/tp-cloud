@@ -1,4 +1,4 @@
-import type { IngestedReading, Role, ThresholdConfig } from '@snowball/shared';
+import type { DeviceConfig, IngestedReading, Role, ThresholdConfig } from '@snowball/shared';
 import type { Scope } from './auth/scope';
 import type { TelemetryQuery } from './query';
 
@@ -16,6 +16,7 @@ export interface UnitRow {
   setpoint_c: number | null;
   temp_min_c: number | null;
   temp_max_c: number | null;
+  tolerance_min: number | null;
   /** minutes without a reading before the unit counts as silent; null falls back to the dashboard default */
   signal_timeout_min: number | null;
 }
@@ -47,7 +48,7 @@ export interface UserRecord extends UserRow {
 
 export type AckResult = { status: 'ok'; alert: AlertRow } | { status: 'not-found' } | { status: 'already' };
 
-export type ConfigPatch = Partial<Pick<ThresholdConfig, 'setpoint_c' | 'temp_min_c' | 'temp_max_c' | 'tolerance_min'>>;
+export type ConfigPatch = Partial<DeviceConfig>;
 
 export class DuplicateEmailError extends Error {
   constructor(email: string) {

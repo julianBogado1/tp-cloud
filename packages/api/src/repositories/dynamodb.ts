@@ -93,6 +93,7 @@ async function listUnits(scope: Scope): Promise<UnitRow[]> {
     setpoint_c: configs[index].Item?.setpoint_c == null ? null : Number(configs[index].Item.setpoint_c),
     temp_min_c: configs[index].Item?.temp_min_c == null ? null : Number(configs[index].Item.temp_min_c),
     temp_max_c: configs[index].Item?.temp_max_c == null ? null : Number(configs[index].Item.temp_max_c),
+    tolerance_min: configs[index].Item?.tolerance_min == null ? null : Number(configs[index].Item.tolerance_min),
     signal_timeout_min: configs[index].Item?.signal_timeout_min == null ? null : Number(configs[index].Item.signal_timeout_min),
   })).sort((a, b) => a.unit_id.localeCompare(b.unit_id));
 }

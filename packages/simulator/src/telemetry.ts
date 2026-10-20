@@ -11,6 +11,10 @@ export interface UnitState {
   lat: number;
   lon: number;
   inExcursion: boolean;
+  /** thresholds received through the shadow; undefined until the first get/delta */
+  temp_min_c?: number;
+  temp_max_c?: number;
+  tolerance_min?: number;
 }
 
 export function createUnit(unitId: string, setpointC: number): UnitState {

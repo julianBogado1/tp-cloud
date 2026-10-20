@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import mqtt, { type MqttClient } from 'mqtt';
 import { telemetryTopic } from '@snowball/shared';
+import { applyDesired, isOutOfRange, reportedDoc, shadowTopics } from './device-config';
 import { createUnit, generateReading, type UnitState } from './telemetry';
 
 /**
@@ -77,42 +78,50 @@ function connectUnit(unitId: string): MqttClient {
   });
 }
 
-function shadowDeltaTopic(unitId: string): string {
-  return `$aws/things/${unitId}/shadow/update/delta`;
-}
-
-function shadowUpdateTopic(unitId: string): string {
-  return `$aws/things/${unitId}/shadow/update`;
-}
-
 function startUnit(unitId: string, scenario: Scenario): void {
   let unit: UnitState = createUnit(unitId, setpoint);
   const client = connectUnit(unitId);
+  const topics = shadowTopics(unitId);
+
+  function report(): void {
+    client.publish(topics.update, JSON.stringify(reportedDoc(unit)));
+  }
 
   client.on('connect', () => {
     console.log(`[${unitId}] connected to IoT Core`);
-    client.subscribe(shadowDeltaTopic(unitId));
-    // publish the currently applied state to initialize the shadow
-    client.publish(
-      shadowUpdateTopic(unitId),
-      JSON.stringify({ state: { reported: { setpoint_c: unit.setpoint_c } } }),
-    );
+    client.subscribe([topics.delta, topics.getAccepted, topics.getRejected]);
+    // read the full desired state: orders sent while the unit was offline are applied on reconnect
+    client.publish(topics.get, '');
   });
 
   client.on('message', (topic, payload) => {
-    if (topic !== shadowDeltaTopic(unitId)) return;
-    const delta = JSON.parse(payload.toString());
-    const desired = delta?.state?.setpoint_c;
-    if (typeof desired !== 'number') return;
-    console.log(`[${unitId}] desired setpoint ${desired}°C — applying in 3s`);
-    setTimeout(() => {
-      unit = { ...unit, setpoint_c: desired };
-      client.publish(
-        shadowUpdateTopic(unitId),
-        JSON.stringify({ state: { reported: { setpoint_c: desired } } }),
-      );
-      console.log(`[${unitId}] setpoint applied and reported: ${desired}°C`);
-    }, 3000);
+    let doc: { state?: { desired?: unknown } & Record<string, unknown> };
+    try {
+      doc = JSON.parse(payload.toString());
+    } catch {
+      console.error(`[${unitId}] ignoring non-JSON message on ${topic}`);
+      return;
+    }
+    if (topic === topics.getAccepted) {
+      const result = applyDesired(unit, doc?.state?.desired);
+      unit = result.unit;
+      report();
+      console.log(`[${unitId}] shadow loaded: ${JSON.stringify(result.applied)}`);
+    } else if (topic === topics.getRejected) {
+      // 404: the thing has no shadow yet — initialize it with the applied state
+      report();
+    } else if (topic === topics.delta) {
+      const state = doc?.state;
+      console.log(`[${unitId}] desired config ${JSON.stringify(state)} — applying in 3s`);
+      setTimeout(() => {
+        const result = applyDesired(unit, state);
+        unit = result.unit;
+        report();
+        if (Object.keys(result.applied).length > 0) {
+          console.log(`[${unitId}] config applied and reported: ${JSON.stringify(result.applied)}`);
+        }
+      }, 3000);
+    }
   });
 
   client.on('error', (err) => console.error(`[${unitId}] MQTT error:`, err.message));
@@ -133,6 +142,9 @@ function startUnit(unitId: string, scenario: Scenario): void {
     unit = result.unit;
     client.publish(telemetryTopic(unitId), JSON.stringify(result.reading), { qos: 1 });
     console.log(`[${unitId}] ${result.reading.ts} ${result.reading.temp_c}°C bat ${result.reading.battery}%`);
+    if (isOutOfRange(unit, result.reading.temp_c)) {
+      console.log(`[${unitId}] LOCAL ALARM ${result.reading.temp_c}°C outside [${unit.temp_min_c}, ${unit.temp_max_c}]`);
+    }
   }, intervalMs);
 
   if (scenario.silenceAfter !== undefined) {

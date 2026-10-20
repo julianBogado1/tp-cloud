@@ -1,7 +1,7 @@
 /**
  * People-auth vocabulary shared by the API (issuer/verifier) and the
- * dashboard (types only — the dashboard never imports runtime code from
- * this package, see packages/dashboard/src/auth.ts).
+ * dashboard (types only — the dashboard keeps its own runtime copy, see
+ * packages/dashboard/src/auth.ts).
  */
 
 export type Role = 'operator' | 'supervisor' | 'admin';
