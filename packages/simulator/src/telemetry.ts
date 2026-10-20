@@ -13,14 +13,29 @@ export interface UnitState {
   inExcursion: boolean;
 }
 
+/**
+ * Starting position per unit. They are trucks of the same cold chain in the
+ * same metropolitan area, so they stay a few kilometres apart: far enough to
+ * be told apart on the dashboard map at zoom 12-14, close enough that the
+ * initial fitBounds still frames the whole fleet in one view. The default is
+ * the Obelisco, for any unit id the simulator is asked for beyond these.
+ */
+const DEFAULT_ORIGIN: readonly [number, number] = [-34.6037, -58.3816];
+const UNIT_ORIGIN: Readonly<Record<string, readonly [number, number]>> = {
+  'SB-001': [-34.6037, -58.3816], // Obelisco, Buenos Aires
+  'SB-002': [-34.5633, -58.4586], // Núñez
+  'SB-003': [-34.6546, -58.3283], // Avellaneda
+};
+
 export function createUnit(unitId: string, setpointC: number): UnitState {
+  const [lat, lon] = UNIT_ORIGIN[unitId] ?? DEFAULT_ORIGIN;
   return {
     unit_id: unitId,
     setpoint_c: setpointC,
     temp_c: setpointC,
     battery: 100,
-    lat: -34.6037,
-    lon: -58.3816,
+    lat,
+    lon,
     inExcursion: false,
   };
 }

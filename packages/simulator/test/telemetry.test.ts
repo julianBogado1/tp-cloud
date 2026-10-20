@@ -44,6 +44,29 @@ describe('generateReading — telemetry of a simulated unit', () => {
     expect(reading.temp_c).toBeLessThan(-16);
   });
 
+  test('each known unit starts at its own position, close but distinguishable', () => {
+    const origins = ['SB-001', 'SB-002', 'SB-003'].map((id) => createUnit(id, -18));
+    const keys = origins.map((u) => `${u.lat},${u.lon}`);
+    expect(new Set(keys).size).toBe(3);
+    for (const a of origins) {
+      for (const b of origins) {
+        if (a.unit_id === b.unit_id) continue;
+        const apart = Math.max(Math.abs(a.lat - b.lat), Math.abs(a.lon - b.lon));
+        // Well above the +-0.001 drift of one step, well inside one metro area.
+        expect(apart).toBeGreaterThan(0.01);
+        expect(apart).toBeLessThan(0.5);
+      }
+    }
+  });
+
+  test('an unknown unit id falls back to a valid default position', () => {
+    const unit = createUnit('SB-999', -18);
+    expect(Number.isFinite(unit.lat)).toBe(true);
+    expect(Number.isFinite(unit.lon)).toBe(true);
+    expect(Math.abs(unit.lat)).toBeLessThanOrEqual(90);
+    expect(Math.abs(unit.lon)).toBeLessThanOrEqual(180);
+  });
+
   test('the battery decreases with each reading and never goes below zero', () => {
     const initial = createUnit('SB-001', -18);
     const after10 = iterate(initial, 10, now);

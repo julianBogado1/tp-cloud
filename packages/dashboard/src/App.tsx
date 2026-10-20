@@ -7,6 +7,7 @@ import { ConfigPanel } from './ConfigPanel';
 import { Login } from './Login';
 import { Sparkline } from './Sparkline';
 import { UnitCard } from './UnitCard';
+import { UnitsMap } from './UnitsMap';
 import { UsersPanel } from './UsersPanel';
 
 const HISTORY_POINTS = 60;
@@ -121,6 +122,14 @@ function Dashboard({ session, onLogout }: { session: Session; onLogout: () => vo
         <span className="muted">{session.user.email} · {session.user.role}</span>
         <button className="link" onClick={onLogout}>Salir</button>
       </header>
+
+      <UnitsMap
+        units={units}
+        history={history}
+        nowMs={nowMs}
+        selected={selected}
+        onSelect={(id) => setSelected((prev) => (prev === id ? null : id))}
+      />
 
       <section className="units">
         {units.map((unit) => (

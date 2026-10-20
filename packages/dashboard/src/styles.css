@@ -100,3 +100,39 @@ button:disabled { opacity: 0.6; cursor: default; }
 .form label { display: grid; gap: 4px; color: var(--muted); }
 .form h3 { margin: 16px 0 4px; font-size: 14px; color: var(--muted); }
 tr.acked td { color: var(--muted); }
+
+/* Units map. Height is not cosmetic: without it the container is 0 px tall
+   and Leaflet renders nothing at all. */
+.map-toolbar { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+.units-map {
+  height: 360px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 14px;
+}
+
+/* Leaflet writes stroke/fill as presentation attributes, which have the lowest
+   precedence in the cascade, so these rules win without !important and the
+   palette above stays the single source of colour. */
+.unit-marker { stroke-width: 2; fill-opacity: 0.55; cursor: pointer; }
+.unit-marker-ok        { stroke: var(--ok);        fill: var(--ok); }
+.unit-marker-excursion { stroke: var(--excursion); fill: var(--excursion); }
+.unit-marker-stale     { stroke: var(--stale);     fill: var(--stale); }
+.unit-marker-selected  { stroke: var(--accent); stroke-width: 4; }
+
+/* Contrast for Leaflet's own controls on the dark theme. The attribution is a
+   requirement of the OSM tile usage policy: it may be restyled, never hidden. */
+.leaflet-container { background: var(--panel); }
+.leaflet-control-attribution {
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+}
+.leaflet-control-attribution a { color: var(--accent); }
+.leaflet-control-zoom a {
+  background: var(--panel);
+  border-color: var(--border);
+  color: var(--text);
+}
+.leaflet-control-zoom a:hover { background: var(--border); color: var(--text); }
+.leaflet-bar { border-color: var(--border); }

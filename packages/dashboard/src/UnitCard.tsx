@@ -1,5 +1,6 @@
 import type { IngestedReading } from '@snowball/shared';
 import type { UnitWithReading } from './api';
+import { latestReading } from './map';
 import { Sparkline } from './Sparkline';
 import { formatAgo, readingStatus } from './status';
 
@@ -14,7 +15,7 @@ interface Props {
 const STATUS_LABEL = { ok: 'en rango', excursion: 'fuera de rango', stale: 'sin señal' } as const;
 
 export function UnitCard({ unit, history, nowMs, selected, onSelect }: Props) {
-  const last = history.length > 0 ? history[history.length - 1] : unit.last_reading;
+  const last = latestReading(unit, history);
   const status = readingStatus(last, unit, nowMs);
 
   return (
