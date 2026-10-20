@@ -34,7 +34,12 @@ defaults:
 env:
   AWS_REGION: us-east-1
   # Región de la réplica del sitio estático. Una sola fuente de verdad para
-  # bootstrap-buckets.sh, delete-buckets.sh y Terraform. Vacía = sin réplica.
+  # bootstrap-buckets.sh, delete-buckets.sh y Terraform: las dos líneas usan la
+  # misma expresión, así que no pueden divergir.
+  # OJO: un repo variable en blanco NO apaga la réplica. En las expresiones de
+  # Actions la cadena vacía es falsy, así que `|| 'us-west-2'` devuelve el default
+  # igual. Para apagarla hay que editar estas dos líneas (o usar un
+  # terraform.tfvars local con dashboard_replica_region = "").
   DASHBOARD_REPLICA_REGION: ${{ vars.DASHBOARD_REPLICA_REGION || 'us-west-2' }}
   TF_VAR_dashboard_replica_region: ${{ vars.DASHBOARD_REPLICA_REGION || 'us-west-2' }}
   TF_IN_AUTOMATION: "true"
@@ -188,7 +193,10 @@ jobs:
             fi
             echo "- IoT endpoint: $(terraform -chdir=terraform output -raw iot_endpoint)"
             echo ""
-            echo "Las dos URLs sirven el mismo build y consultan el mismo ALB de ${AWS_REGION}."
+            if [ -n "${REPLICA_BUCKET}" ]; then
+              echo "Las dos URLs sirven el mismo build y consultan el mismo ALB de ${AWS_REGION}:"
+              echo "la réplica es del sitio estático, no del backend."
+            fi
             echo "Los certificados IoT se bajan en tu máquina con scripts/export-certs.sh."
           } >> "$GITHUB_STEP_SUMMARY"
 

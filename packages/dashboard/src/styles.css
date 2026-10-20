@@ -114,6 +114,10 @@ tr.acked td { color: var(--muted); }
 /* Leaflet writes stroke/fill as presentation attributes, which have the lowest
    precedence in the cascade, so these rules win without !important and the
    palette above stays the single source of colour. */
+/* Order matters and is the contract: .unit-marker-selected has the same
+   specificity as the three status rules, so it only wins by coming last.
+   Reordering these five rules breaks the selection highlight with every test
+   still green -- markerClass() pins the class names, not the cascade. */
 .unit-marker { stroke-width: 2; fill-opacity: 0.55; cursor: pointer; }
 .unit-marker-ok        { stroke: var(--ok);        fill: var(--ok); }
 .unit-marker-excursion { stroke: var(--excursion); fill: var(--excursion); }

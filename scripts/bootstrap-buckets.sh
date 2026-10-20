@@ -2,10 +2,26 @@
 set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
-# Region for the replicated dashboard website bucket. Empty (or unset) keeps the
-# old behaviour exactly: four buckets in ${REGION}. Must match the Terraform
-# variable dashboard_replica_region, or the apply fails with NoSuchBucket.
-DASHBOARD_REPLICA_REGION="${DASHBOARD_REPLICA_REGION:-}"
+# Region for the replicated dashboard website bucket, defaulting to us-west-2.
+# Must match var.dashboard_replica_region, whose default is also us-west-2: if the
+# script skipped the replica bucket while Terraform expected it, the apply would
+# fail with NoSuchBucket on the four replica resources. Set it to "" to disable.
+# No colon in the expansion: ${VAR-default} substitutes only when VAR is UNSET,
+# so an explicit DASHBOARD_REPLICA_REGION="" stays empty and disables the replica.
+# With ${VAR:-default} an empty value would be replaced by the default and the
+# off switch would silently do nothing.
+DASHBOARD_REPLICA_REGION="${DASHBOARD_REPLICA_REGION-us-west-2}"
+
+# The Learner Lab only answers in us-east-1 and us-west-2. Checked here because
+# this script runs BEFORE terraform in the pipeline, so Terraform's own
+# validation would never get the chance to print its message.
+case "${DASHBOARD_REPLICA_REGION}" in
+  "" | us-east-1 | us-west-2) ;;
+  *)
+    echo "DASHBOARD_REPLICA_REGION must be \"\" (disabled), us-east-1 or us-west-2: ${DASHBOARD_REPLICA_REGION}" >&2
+    exit 2
+    ;;
+esac
 SUFFIX="${1:-}"
 STATE_BUCKET="${2:-}"
 
@@ -57,9 +73,13 @@ put_private_defaults() {
 }
 
 put_versioning() {
+  # Takes the region like the other two helpers, so a future caller for a bucket
+  # outside $REGION cannot silently hit the wrong endpoint. Today only the state
+  # bucket uses it.
+  local bucket="$1" region="${2:-$REGION}"
   aws s3api put-bucket-versioning \
-    --bucket "$1" \
-    --region "${REGION}" \
+    --bucket "${bucket}" \
+    --region "${region}" \
     --versioning-configuration Status=Enabled
 }
 

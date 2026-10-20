@@ -1,3 +1,13 @@
+> **Nota (2026-10-20).** Este es el **encargo de trabajo** con el que se hizo la Feature 5, y
+> describe el repo **antes** de ese trabajo: cuando dice «no hay librería de mapas» o «hay un solo
+> bucket S3 Website», eso ya no es cierto. El estado actual está en
+> [`features-faltantes-propuesta.md`](features-faltantes-propuesta.md); los planes que salieron de
+> acá son [`plan-mapa-unidades.md`](plan-mapa-unidades.md),
+> [`plan-replica-dashboard.md`](plan-replica-dashboard.md),
+> [`plan-mqtt-websockets.md`](plan-mqtt-websockets.md) y
+> [`plan-feature-5-restricciones.md`](plan-feature-5-restricciones.md). Se conserva porque documenta
+> el método y los criterios con los que se decidió cada cosa.
+
 
 Sos el **orquestador** de la Feature 5 de la propuesta formal de Snowball («Dashboard en tiempo
 real»), en el repo `tp-cloud` (ITBA Cloud, Entrega 3). Tu trabajo es **coordinar subagentes**, no

@@ -434,11 +434,11 @@ Verificables sin credenciales:
 
 1. `terraform fmt -check -recursive -diff` sin diferencias.
 2. `terraform -chdir=terraform init -backend=false && terraform -chdir=terraform validate` en verde.
-3. `terraform -chdir=terraform validate -var dashboard_replica_region=eu-west-1` **falla** con el `error_message` de la `validation`.
+3. ~~`terraform validate -var dashboard_replica_region=eu-west-1` **falla**.~~ **Criterio corregido (2026-10-20): era inválido.** `validate` **no evalúa los bloques `validation` de las variables** — comprobado: devuelve `Success!` y exit 0. La validación recién salta en `plan`, así que el comando correcto es `terraform -chdir=terraform plan -var dashboard_replica_region=eu-west-1`, que **sí** falla con el `error_message`. Consecuencia que importa: la `validation` **no tiene ningún gate en el job `validate` del CI**, que es el que corre siempre; solo se evalúa en `plan`/`deploy`, que necesitan credenciales.
 4. `npm ci && npm run build && npm test` en verde, y `git diff --name-only` **no lista ningún archivo bajo `packages/`**.
 5. `bash -n` limpio en los dos scripts.
-6. `grep -rn "s3-website-us-east-1" .github README.md docs/` **no devuelve nada** (el formato de URL ya no está hardcodeado en ningún lado).
-7. El diff de `scripts/bootstrap-buckets.sh` muestra que sin `DASHBOARD_REPLICA_REGION` el comportamiento es byte por byte el de hoy (cuatro buckets, misma región).
+6. `grep -rn "s3-website-us-east-1" .github README.md docs/infra-terraform.md docs/terraform-buckets-learner-lab.md` **no devuelve nada** (el formato de URL ya no está hardcodeado en ningún lugar operativo). **Criterio acotado (2026-10-20):** la versión original barría todo `docs/`, lo que es imposible de cumplir — los `docs/plan-*.md` citan el host a propósito, incluida la tabla de formatos por región de este mismo plan y este mismo criterio.
+7. ~~Sin `DASHBOARD_REPLICA_REGION` el comportamiento es byte por byte el de hoy.~~ **Criterio retirado (2026-10-20):** es incompatible con la decisión 3 de §2.10 (réplica **encendida** por default). Si el script calla la réplica y Terraform la espera, el `apply` falla con `NoSuchBucket`. Los defaults tienen que coincidir en los tres lugares: el script pasó a `${DASHBOARD_REPLICA_REGION:-us-west-2}`, igual que `var.dashboard_replica_region`. La retrocompatibilidad que se conserva es la de los **argumentos** del script, no la de sus defaults.
 8. `README.md` y `docs/features-faltantes-propuesta.md` contienen la frase de §3.1 y la fila 5 sigue en 🟡.
 
 Verificables solo con credenciales (§9):

@@ -145,8 +145,8 @@ Recursos que crea Terraform (resumen; el detalle por módulo está en la
 - **S3:** configuración de los buckets de dashboard, artifacts y archive, y
   subida del bundle de la API.
 
-**Lo que NO crea Terraform:** los cuatro buckets en sí (state, dashboard,
-artifacts, archive). Los crea un script de AWS CLI, por una restricción del
+**Lo que NO crea Terraform:** los cinco buckets en sí (state, dashboard, la
+réplica del dashboard, artifacts, archive). Los crea un script de AWS CLI, por una restricción del
 Learner Lab (ver [sección 5](#5-crear-los-buckets-paso-previo-a-terraform)).
 Tampoco se crean roles IAM: el Lab no lo permite, y Terraform usa `LabRole` y
 `LabInstanceProfile` (los busca con `data` sources).
@@ -269,7 +269,7 @@ caracteres, sin guiones bajos. Anotá dos valores, los vas a usar varias veces:
 Desde la raíz del repo:
 
 ```bash
-bash scripts/bootstrap-buckets.sh grupo-01 snowball-tfstate-grupo-01
+DASHBOARD_REPLICA_REGION=us-west-2 bash scripts/bootstrap-buckets.sh grupo-01 snowball-tfstate-grupo-01
 aws s3 ls
 ```
 
@@ -852,7 +852,7 @@ gh secret set AWS_SESSION_TOKEN
    máquina con `bash scripts/export-certs.sh` (lee los outputs del state remoto,
    así que necesitás haber hecho `terraform init` con el mismo backend).
 4. Para destruir: `action: destroy` y `confirm: DESTROY`. El destroy **no borra
-   los buckets**: después corré localmente `scripts/delete-buckets.sh` (ver
+   los buckets**: después corré localmente `scripts/delete-buckets.sh` **con `DASHBOARD_REPLICA_REGION`** (si no, el bucket réplica queda huérfano: ver sección 15) (ver
    [sección 15](#15-destruir-todo-y-costos)).
 
 Notas sobre PRs:
@@ -926,14 +926,26 @@ Revisá la lista, escribí `yes`. Tarda unos minutos (el NAT y el ALB son
 lentos de borrar).
 
 **`destroy` no borra los buckets**, porque Terraform no es dueño de ellos
-(sección 5). Quedan los cuatro. Para limpiarlos:
+(sección 5). Quedan **los cinco**, incluido el réplica del dashboard. Para limpiarlos:
 
 ```bash
-# borra dashboard, artifacts y archive (vacía incluso las versiones); conserva el state
-bash scripts/delete-buckets.sh grupo-01 snowball-tfstate-grupo-01
+# borra dashboard, su réplica, artifacts y archive (vacía incluso las versiones); conserva el state
+DASHBOARD_REPLICA_REGION=us-west-2 bash scripts/delete-buckets.sh grupo-01 snowball-tfstate-grupo-01
 
 # borra también el bucket de state (solo si no vas a volver a desplegar)
-bash scripts/delete-buckets.sh grupo-01 snowball-tfstate-grupo-01 --include-state
+DASHBOARD_REPLICA_REGION=us-west-2 bash scripts/delete-buckets.sh grupo-01 snowball-tfstate-grupo-01 --include-state
+```
+
+**Sin `DASHBOARD_REPLICA_REGION` el bucket réplica queda huérfano.** Terraform no es su dueño, así
+que el `destroy` no lo toca, y como los nombres de bucket son **globales** el nombre queda tomado
+para la próxima sesión del Lab: el `create-bucket` del bootstrap va a fallar y hay que ir a borrarlo
+a mano a la consola de **la otra región**, que es donde nadie mira. El valor tiene que ser el mismo
+que se usó al crear (`dashboard_replica_region`, default `us-west-2`).
+
+Si sospechás que quedó alguno de una sesión anterior, `list-buckets` es global y los muestra todos:
+
+```bash
+aws s3api list-buckets   --query "Buckets[?starts_with(Name,'snowball-dashboard-grupo-01-')].Name" --output text
 ```
 
 Pide que escribas `DELETE` (o usá `--yes` para saltear la confirmación).
@@ -1140,7 +1152,13 @@ defensa.
   para eso está `scripts/delete-buckets.sh`.
 - **El `apply` no espera al instance refresh** del ASG tras un cambio del bundle
   de la API (sección 14): hay que seguirlo en la consola.
-- **Una sola región** (`us-east-1`) y dos zonas de disponibilidad.
+- **El backend entero en una sola región** (`us-east-1`) y dos zonas de disponibilidad. Lo único
+  fuera de `us-east-1` es el bucket réplica del **sitio estático** (`us-west-2`), que apunta al
+  mismo ALB: no agrega disponibilidad del backend, y sin Route 53 ni CloudFront tampoco hay nombre
+  único ni failover.
+- **La réplica depende de que `cors_origin` siga en `*`.** La API acepta **un solo** origen
+  (`packages/api/src/index.ts`), así que fijarlo a un origen concreto rompe la otra copia del
+  dashboard.
 
 ---
 

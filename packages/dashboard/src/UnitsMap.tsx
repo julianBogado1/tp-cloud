@@ -106,9 +106,12 @@ export function UnitsMap({ units, history, nowMs, selected, onSelect }: Props) {
       const entry = markers.get(point.unit_id);
 
       if (!entry) {
+        // No `weight` here: Leaflet writes it as a presentation attribute, which
+        // loses against the stylesheet, so .unit-marker's stroke-width is what
+        // actually applies. Setting it in both places would be a second, dead
+        // definition of the same thing.
         const marker = L.circleMarker([point.lat, point.lon], {
           radius: MARKER_RADIUS,
-          weight: 2,
           className: markerClass(point.status, isSelected),
         });
         // The very same callback (and toggle) the cards use, so clicking a
@@ -129,13 +132,19 @@ export function UnitsMap({ units, history, nowMs, selected, onSelect }: Props) {
         const before = markerClass(entry.status, entry.selected).split(' ');
         const after = markerClass(point.status, isSelected).split(' ');
         const element = entry.marker.getElement();
+        // The bookkeeping only advances once the DOM actually changed. If it were
+        // updated unconditionally and getElement() ever returned nothing, the entry
+        // would claim the new status while the element kept the old classes, the
+        // next diff would find nothing to do, and the marker would stay the wrong
+        // colour for good -- an excursion drawn green, which is the one failure
+        // this map must not have.
         if (element) {
           for (const name of before) if (!after.includes(name)) element.classList.remove(name);
           for (const name of after) if (!before.includes(name)) element.classList.add(name);
+          entry.marker.options.className = after.join(' ');
+          entry.status = point.status;
+          entry.selected = isSelected;
         }
-        entry.marker.options.className = after.join(' ');
-        entry.status = point.status;
-        entry.selected = isSelected;
       }
       if (isSelected) entry.marker.bringToFront();
     }

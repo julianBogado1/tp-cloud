@@ -76,7 +76,7 @@ caída del pipeline** (ninguna unidad llega). Las dos publican en
 | `packages/telemetry-export` | Lambda diaria: copia el histórico del día anterior de DynamoDB a S3 (`.ndjson.gz` por unidad) para el archivo en Glacier. También corre local (`npm run export`) | Lambda (EventBridge Scheduler) |
 | `packages/dashboard` | Frontend React (Vite): tarjetas por unidad y **mapa de unidades coloreado por estado** (Leaflet + tiles de OpenStreetMap), feed en vivo, historial y alertas. Compila a archivos 100 % estáticos | S3 static website, **replicado en una segunda región** |
 | `terraform/` | Toda la infraestructura como código (módulos propios, un módulo externo, backend S3) | — |
-| `scripts/` | `bootstrap-buckets.sh` (crea los buckets), `delete-buckets.sh` (los borra), `export-certs.sh` (baja los certificados IoT), `seed-data.json` (datos demo de DynamoDB), `mqtt-probe.mjs` (diagnóstico de conexión MQTT) | local |
+| `scripts/` | `bootstrap-buckets.sh` (crea los buckets; `DASHBOARD_REPLICA_REGION` incluye el réplica del dashboard), `delete-buckets.sh` (los borra, con la misma variable), `export-certs.sh` (baja los certificados IoT), `seed-data.json` (datos demo de DynamoDB), `mqtt-probe.mjs` (diagnóstico de conexión MQTT) | local |
 | `.github/` | Pipeline de GitHub Actions (`workflows/terraform.yml`) y composite action de preparación | GitHub |
 | `infra/sql/` | SQL histórico de la Entrega 2, conservado solo como referencia; la ejecución actual usa `scripts/seed-data.json` | — |
 
@@ -196,9 +196,9 @@ La raíz (`main.tf`) además administra:
 
 > **Sin `aws_s3_bucket`.** El SCP del Learner Lab deniega
 > `s3:GetBucketObjectLockConfiguration`, que el provider lee tras crear cualquier
-> bucket. Por eso los cuatro buckets (state, dashboard, artifacts, archive) los
-> crea `scripts/bootstrap-buckets.sh` y Terraform solo gestiona sus
-> configuraciones. Detalle en `docs/terraform-buckets-learner-lab.md`.
+> bucket. Por eso los cinco buckets (state, dashboard, **la réplica del
+> dashboard**, artifacts, archive) los crea `scripts/bootstrap-buckets.sh` y
+> Terraform solo gestiona sus configuraciones. Detalle en `docs/terraform-buckets-learner-lab.md`.
 
 ### Variables y outputs
 
@@ -302,7 +302,7 @@ outputs que se pasan (`module.data.table_names`, `module.iot_ingest.iot_endpoint
 | `validate` | `pull_request` y `workflow_dispatch` (sin credenciales, también en forks) | `terraform fmt -check -recursive`, `init -backend=false` y `validate` sobre `terraform/` |
 | `app` | `pull_request` y `workflow_dispatch` | `npm ci`, `npm run build` y `npm test` |
 | `plan` | solo `pull_request` (después de `validate`) | `terraform plan` contra el state remoto, comentado (y actualizado) en el PR. **Sin efectos secundarios:** no crea buckets ni nada en AWS |
-| `deploy` | solo `workflow_dispatch` (*Run workflow*, después de `validate` y `app`; `environment: learner-lab`) | Según el input `action`: `plan`; `apply` (plan → apply → compila el dashboard con la URL del ALB y lo publica en su bucket); o `destroy` (exige escribir `DESTROY` en `confirm`) |
+| `deploy` | solo `workflow_dispatch` (*Run workflow*, después de `validate` y `app`; `environment: learner-lab`) | Según el input `action`: `plan`; `apply` (plan → apply → compila el dashboard con la URL del ALB y lo publica en **los dos buckets**, principal y réplica, dejando **las dos URLs** en el resumen del run); o `destroy` (exige escribir `DESTROY` en `confirm`) |
 
 La composite action `.github/actions/terraform-setup` verifica secrets,
 variables y credenciales, genera los artefactos (`npm run bundle`: bundle de la
@@ -344,7 +344,10 @@ de verificar el apply desde la rama.)
 3. El resumen del run muestra la URL de la API, la del dashboard y el endpoint
    de IoT. Confirmar la suscripción de SNS desde el mail.
 4. Para destruir: `action: destroy` y `confirm: DESTROY` (los buckets se borran
-   aparte con `scripts/delete-buckets.sh`).
+   aparte, y hay que correrlo **con la variable**:
+   `DASHBOARD_REPLICA_REGION=us-west-2 bash scripts/delete-buckets.sh <sufijo> <state>`.
+   Sin ella el bucket réplica queda huérfano y su nombre, que es global, queda
+   tomado para la próxima sesión del Lab).
 
 Detalle completo en la sección 13 de
 [`docs/infra-terraform.md`](docs/infra-terraform.md).

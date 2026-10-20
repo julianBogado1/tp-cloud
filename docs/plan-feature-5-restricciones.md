@@ -16,14 +16,14 @@ Los tres planes de las piezas viven aparte y este documento no depende de ellos:
 
 ## 1. Inventario de verificación: qué se puede probar sin credenciales de AWS
 
-En esta sesión **no hay credenciales de AWS**, y las del Learner Lab vencen a las ~4 h (`.github/workflows/terraform.yml:3-6`). Nadie puede hacer `terraform apply` ni verificar nada contra la API de AWS. Todo lo que sigue separa lo que es verificable ahora de lo que queda pendiente de una sesión del Lab.
+Cuando se escribió este documento **no había credenciales de AWS en la sesión** (después aparecieron: ver la nota al final de esta sección), y las del Learner Lab vencen a las ~4 h (`.github/workflows/terraform.yml:3-6`). Nadie puede hacer `terraform apply` ni verificar nada contra la API de AWS. Todo lo que sigue separa lo que es verificable ahora de lo que queda pendiente de una sesión del Lab.
 
 ### 1.1 Baseline medido en esta sesión
 
 | Comando | Resultado |
 |---|---|
 | `npm run build` | OK |
-| `npm test` | **179 tests en 27 archivos**, todos verdes |
+| `npm test` | **179 tests en 27 archivos**, todos verdes — este era el baseline **previo** a la Feature 5. Al cierre del trabajo son **201 en 28** (mapa +20, simulador +2) |
 | `terraform -chdir=terraform fmt -check -recursive -diff` | verde (exit 0) |
 | `terraform -chdir=terraform validate -no-color` | `Success! The configuration is valid.` |
 
@@ -54,7 +54,7 @@ Los seis workspaces declaran `"test": "vitest run"`. Cualquier cambio de la Feat
 | `npm test` | Lógica pura y los handlers contra fakes | Cualquier integración real: no hay tests de DOM ni de red |
 | `terraform fmt -check -recursive` | Formato canónico de todos los `.tf`, incluidos los de `modules/` | Semántica |
 | `terraform init -backend=false` | Que los providers y los **módulos externos** se puedan resolver y descargar (hay uno de registry: `terraform/modules/messaging/main.tf:36-38`, `terraform-aws-modules/cloudwatch/aws//modules/metric-alarm ~> 5.0`). **Necesita internet, no credenciales** | Nada de AWS |
-| `terraform validate` | Sintaxis HCL, tipos y `validation` de variables, referencias entre módulos y recursos, providers declarados y alias existentes, expresiones que no dependen del estado | **Nada que dependa del estado real o de la API de AWS** (ver 1.4) |
+| `terraform validate` | Sintaxis HCL, tipos de variables, referencias entre módulos y recursos, providers declarados y alias existentes, expresiones que no dependen del estado | **Nada que dependa del estado real o de la API de AWS** (ver 1.4). **Tampoco los bloques `validation` de las variables**: eso se evalúa en `plan`, comprobado con `validate -var dashboard_replica_region=eu-west-1`, que devuelve `Success!`. O sea que una `validation` **no tiene ningún gate en el job `validate` del CI** |
 
 ### 1.3 `terraform plan` no es un paso «gratis»
 
@@ -88,9 +88,9 @@ Es el **orden global**. Cada plan de pieza aporta su propio checklist específic
 |---|---|---|---|
 | 1 | Credenciales | pegar *AWS Details → AWS CLI* en `~/.aws/credentials`; `aws sts get-caller-identity` | Devuelve el `Account` y un ARN de `LabRole`/`voclabs`. Si falla, nada de lo que sigue tiene sentido |
 | 2 | Dependencias | `npm ci` | Termina sin error. Si se queja del lock, el commit está mal: ver 3.2 |
-| 3 | Build + tests | `npm run build && npm test` | Build sin errores de `tsc` y **≥ 179 tests en ≥ 27 archivos**, todos verdes |
+| 3 | Build + tests | `npm run build && npm test` | Build sin errores de `tsc` y **≥ 201 tests en ≥ 28 archivos**, todos verdes (el umbral es el estado al cierre de la Feature 5, no el baseline previo: con ≥ 179 pasaría una regresión de 22 tests) |
 | 4 | Gate de Terraform sin credenciales | `terraform -chdir=terraform fmt -check -recursive -diff` y `terraform -chdir=terraform init -backend=false -input=false && terraform -chdir=terraform validate -no-color` | `fmt` sin diff y `Success! The configuration is valid.` Es exactamente el job `validate` del CI (`.github/workflows/terraform.yml:63-69`) |
-| 5 | **Buckets, antes del `init`** | `bash scripts/bootstrap-buckets.sh <sufijo> <bucket-de-state>` | Imprime `Creating bucket:` o `Bucket already exists:` por cada uno de los cuatro y termina con la línea de cierre (`scripts/bootstrap-buckets.sh:57-67`). **Este paso va antes del `init` por decisión escrita**: el SCP deniega `s3:GetBucketObjectLockConfiguration`, así que `aws_s3_bucket` no se usa y Terraform solo administra las configuraciones standalone (`docs/terraform-buckets-learner-lab.md:3-17`). El bucket de state queda configurado **entero** acá: versionado, cifrado y Public Access Block (`bootstrap-buckets.sh:57-59`) |
+| 5 | **Buckets, antes del `init`** | `DASHBOARD_REPLICA_REGION=us-west-2 bash scripts/bootstrap-buckets.sh <sufijo> <bucket-de-state>` (es el default del script; con `""` se apaga la réplica, y entonces hay que apagarla también en `dashboard_replica_region`) | Imprime `Creating bucket:` o `Bucket already exists:` por cada uno de los cuatro y termina con la línea de cierre (`scripts/bootstrap-buckets.sh:57-67`). **Este paso va antes del `init` por decisión escrita**: el SCP deniega `s3:GetBucketObjectLockConfiguration`, así que `aws_s3_bucket` no se usa y Terraform solo administra las configuraciones standalone (`docs/terraform-buckets-learner-lab.md:3-17`). El bucket de state queda configurado **entero** acá: versionado, cifrado y Public Access Block (`bootstrap-buckets.sh:57-59`) |
 | 6 | Variables locales | copiar el `.tfvars` de ejemplo y completarlo | `bucket_suffix` **idéntico** al `<sufijo>` del paso 5. El archivo está gitignoreado, no se commitea nunca. El bucket de state **no** es variable de Terraform |
 | 7 | **Artefactos** | `npm run bundle` | Deja en disco los tres zips y el bundle de la API que el `apply` necesita: `packages/alert-processor/dist/alert-processor.zip`, `packages/alert-processor/dist/no-signal-monitor.zip`, `packages/telemetry-export/dist/telemetry-export.zip` y `packages/api/dist/api.bundle.js` (defaults en `terraform/variables.tf:96-115`). La cadena está en `package.json:16` y el CI la corre dentro de la composite action antes del `init` (`.github/actions/terraform-setup/action.yml:74-79`) |
 | 8 | Init del backend | `terraform -chdir=terraform init -backend-config="bucket=<state>" -backend-config="key=snowball/terraform.tfstate" -backend-config="region=us-east-1"` | `Terraform has been successfully initialized!` |
@@ -297,7 +297,7 @@ El texto actual de la fila 5 (`docs/features-faltantes-propuesta.md:19`) dice qu
 
 **Escenario A — las tres piezas (incluido F5-C con el spike en verde):** estado ✅. «Al frontend en S3, el gráfico histórico y la actualización en vivo se sumaron el **mapa de unidades por estado**, el **sitio replicado en una segunda región** (`us-west-2`; son dos URLs distintas, sin Route 53 ni CloudFront en el Learner Lab, así que no hay nombre único ni failover) y la **suscripción MQTT sobre WebSockets** contra IoT Core con un custom authorizer que valida el JWT del repo, en reemplazo del WebSocket propio de la API.»
 
-**Escenario B — dos de tres (mapa + réplica; MQTT documentado y no implementado). Es el resultado más probable:** estado 🟡. «Se sumaron el **mapa de unidades por estado** y el **sitio estático replicado en una segunda región** (`us-west-2`). La réplica es solo del frontend: el backend sigue entero en `us-east-1` y las dos copias apuntan al mismo ALB, así que son dos URLs distintas sin failover. Falta la **suscripción MQTT sobre WebSockets**: el feed en vivo sigue siendo el WebSocket propio de la API, que consulta DynamoDB cada 3 s. Está **documentada y no implementada** porque requiere un custom authorizer de IoT y el SCP del Learner Lab no permite crearlo.»
+**Escenario B — dos de tres (mapa + réplica; MQTT documentado y no implementado). Es el resultado más probable:** estado 🟡. «Se sumaron el **mapa de unidades por estado** y el **sitio estático replicado en una segunda región** (`us-west-2`). La réplica es solo del frontend: el backend sigue entero en `us-east-1` y las dos copias apuntan al mismo ALB, así que son dos URLs distintas sin failover. Falta la **suscripción MQTT sobre WebSockets**: el feed en vivo sigue siendo el WebSocket propio de la API, que consulta DynamoDB cada 3 s. Está **documentada y no implementada**: requiere un custom authorizer de IoT y el spike de permisos (`iot:CreateAuthorizer` y `lambda:AddPermission` para `iot.amazonaws.com`) está **pendiente de ejecución**, no fallado.»
 
 **Escenario C — solo el mapa:** estado 🟡. «Se sumó el **mapa de unidades por estado**. Siguen faltando el **sitio replicado por región** (hay un único bucket en `us-east-1`) y la **suscripción MQTT sobre WebSockets** (el feed en vivo es el WebSocket propio de la API, que consulta DynamoDB cada 3 s).» Con link a los dos planes.
 
@@ -331,8 +331,9 @@ Todas afectan a más de una pieza, así que conviene resolverlas **antes** de ar
 
 Cosas encontradas en el camino que **no** se planifican acá (umbrales por Shadow, replicación del backend, latencias, HTTPS, autoescalado), anotadas para que no se pierdan:
 
-1. **Link roto en `docs/features-faltantes-propuesta.md:53`**: apunta a `relevamiento-variante-b.md`, que no existe en `docs/`. Ya estaba detectado en `docs/plan-sin-senal.md:123` y sigue sin arreglar. Cuesta un segundo en el pase final de la tanda 3.
-2. **`docs/encargo-feature-5.md` y `scripts/seed-db.sh` están sin trackear** (`git status`). El primero es el encargo de esta tanda de trabajo; el segundo es un script que quedó fuera de git, probablemente residuo de la migración de RDS a DynamoDB. Decidir si se commitea o se borra, no dejarlo en el limbo.
+1. ~~**Link roto en `docs/features-faltantes-propuesta.md:53`** a `relevamiento-variante-b.md`.~~ **Resuelto**: el párrafo se reescribió en el pase de consolidación y ya no apunta a un archivo inexistente. Verificado: los links `.md` del repo resuelven.
+2. **`scripts/seed-db.sh` sigue sin trackear** (`git status`). Es un script que quedó fuera de git, probablemente residuo de la migración de RDS a DynamoDB: decidir si se commitea o se borra, no dejarlo en el limbo. `docs/encargo-feature-5.md` ya quedó commiteado, con un encabezado que aclara que describe el repo **antes** de este trabajo.
+3. **Había credenciales de AWS activas en la sesión**, al contrario de lo que asumía el encargo (cuenta del Learner Lab, rol `voclabs`). Nada de lo que afirma este documento sobre AWS se verificó contra la cuenta: **no se corrió ningún `apply` ni ningún `plan` de despliegue**, así que todo lo que dependa de AWS sigue siendo checklist pendiente. El único efecto real fue un `create-bucket` accidental con un sufijo ficticio, que falló por nombre tomado y no dejó rastro.
 3. **El `TODO(4.3)` del workflow** (`.github/workflows/terraform.yml:135-136`): `apply`/`destroy` todavía no están restringidos a `main`. Si se decide trabajar en ramas (decisión 4), conviene saber que **se puede desplegar desde cualquier rama**.
 4. **El job `plan` no depende de `app`** (`:88`): un PR con los tests rotos igual genera y comenta un plan. Es intencional (el plan no depende del código), pero puede dar la impresión de «verde» en un PR rojo.
 5. **El typecheck del dashboard no cubre `test/`** (`packages/dashboard/tsconfig.json:15`: `"include": ["src"]`), y vitest no hace typecheck. Un error de tipos en un archivo de test **no rompe el build**; solo se nota si el test falla en runtime.

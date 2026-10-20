@@ -1,5 +1,7 @@
 region                 = "us-east-1"
-# dashboard_replica_region = "us-west-2"   # "" para apagar la réplica del sitio estático
+# dashboard_replica_region = "us-west-2"   # ES el default: la réplica viene ENCENDIDA.
+#                                          # "" la apaga. Tiene que coincidir con
+#                                          # DASHBOARD_REPLICA_REGION de los scripts.   # "" para apagar la réplica del sitio estático
 bucket_suffix          = "grupo-01"
 bastion_allowed_cidr   = "203.0.113.10/32"
 key_name               = "vockey"
