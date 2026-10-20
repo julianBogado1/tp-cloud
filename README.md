@@ -59,6 +59,10 @@ caída del pipeline** (ninguna unidad llega). Las dos publican en
 | [`docs/terraform-buckets-learner-lab.md`](docs/terraform-buckets-learner-lab.md) | Por qué los buckets se crean por script y no por Terraform |
 | [`docs/features-faltantes-propuesta.md`](docs/features-faltantes-propuesta.md) | Relevamiento de lo que falta respecto de la propuesta formal de la Entrega 1 (features, multi-región y requisitos no funcionales) |
 | [`docs/plan-sin-senal.md`](docs/plan-sin-senal.md) | Plan y decisiones de diseño de la alerta de «sin señal» por unidad (incluye la alternativa descartada de una alarma de CloudWatch por unidad) |
+| [`docs/plan-mapa-unidades.md`](docs/plan-mapa-unidades.md) | Plan del mapa de unidades por estado (**implementado**): Leaflet puro sin `react-leaflet`, color desde las variables CSS de la paleta y tiles de OpenStreetMap con su política de uso |
+| [`docs/plan-replica-dashboard.md`](docs/plan-replica-dashboard.md) | Plan de la réplica del sitio estático por región (**implementado**): dual-deploy contra la alternativa descartada de Cross-Region Replication, y qué se puede y qué no se puede prometer sin Route 53 |
+| [`docs/plan-mqtt-websockets.md`](docs/plan-mqtt-websockets.md) | Plan de la suscripción MQTT sobre WebSockets contra IoT Core (**documentado, no implementado**): custom authorizer, el spike de permisos que lo bloquea y el plan B |
+| [`docs/plan-feature-5-restricciones.md`](docs/plan-feature-5-restricciones.md) | Qué de la Feature 5 es verificable sin credenciales, el checklist manual de AWS, el riesgo de cada cambio sobre el CI y el orden de implementación |
 | [`docs/infra-aws-consola.md`](docs/infra-aws-consola.md) | Guía histórica de la Entrega 2 (todo a mano desde la consola, todavía con RDS y con el alert-processor en EC2). Solo se le agregó un aviso al comienzo |
 
 ## Estructura
@@ -70,7 +74,7 @@ caída del pipeline** (ninguna unidad llega). Las dos publican en
 | `packages/alert-processor` | Dos artefactos del mismo paquete, los dos stateless (el estado vive en DynamoDB). **Excursión térmica:** consumidor de SQS con máquina de estados, umbrales y alertas en DynamoDB y notificación SNS; `src/handler.ts` es el handler de Lambda, `src/index.ts` el loop de long-polling para correrlo local (`npm run alert-processor`) y ambos comparten `src/process.ts`. **Sin señal por unidad:** `src/no-signal-handler.ts` barre `snowball-units`, compara el silencio de cada unidad contra su `signal_timeout_min` con la máquina de estados pura de `src/silence.ts`, y emite alerta y aviso de recuperación | Dos Lambdas: event source mapping de SQS (`alert-processor.zip`) y EventBridge Scheduler (`no-signal-monitor.zip`) |
 | `packages/api` | REST + WebSocket (`/live`) para el dashboard: login con JWT propio (`/auth`), roles operador/supervisor/admin con alcance por cliente, lectura de unidades/alertas/telemetría, acknowledgement de alertas, configuración remota vía Device Shadow y ABM de usuarios. Acceso a datos por repositorios DynamoDB. Stateless | EC2 (Auto Scaling Group), artefacto de un solo archivo |
 | `packages/telemetry-export` | Lambda diaria: copia el histórico del día anterior de DynamoDB a S3 (`.ndjson.gz` por unidad) para el archivo en Glacier. También corre local (`npm run export`) | Lambda (EventBridge Scheduler) |
-| `packages/dashboard` | Frontend React (Vite): tarjetas por unidad con feed en vivo, historial y alertas. Compila a archivos 100 % estáticos | S3 static website |
+| `packages/dashboard` | Frontend React (Vite): tarjetas por unidad y **mapa de unidades coloreado por estado** (Leaflet + tiles de OpenStreetMap), feed en vivo, historial y alertas. Compila a archivos 100 % estáticos | S3 static website, **replicado en una segunda región** |
 | `terraform/` | Toda la infraestructura como código (módulos propios, un módulo externo, backend S3) | — |
 | `scripts/` | `bootstrap-buckets.sh` (crea los buckets), `delete-buckets.sh` (los borra), `export-certs.sh` (baja los certificados IoT), `seed-data.json` (datos demo de DynamoDB), `mqtt-probe.mjs` (diagnóstico de conexión MQTT) | local |
 | `.github/` | Pipeline de GitHub Actions (`workflows/terraform.yml`) y composite action de preparación | GitHub |
@@ -87,7 +91,9 @@ el Lab iniciado y las credenciales de **AWS Details → AWS CLI** pegadas en
 npm ci
 
 # 1. Buckets (los crea la CLI, no Terraform: el SCP del Lab bloquea la lectura de Object Lock)
-bash scripts/bootstrap-buckets.sh <sufijo> <bucket-de-state>
+#    DASHBOARD_REPLICA_REGION crea además el bucket replicado del dashboard en esa región;
+#    tiene que coincidir con dashboard_replica_region del paso 2
+DASHBOARD_REPLICA_REGION=us-west-2 bash scripts/bootstrap-buckets.sh <sufijo> <bucket-de-state>
 
 # 2. Variables propias (bucket_suffix tiene que coincidir con el <sufijo> del paso 1;
 #    el bucket de state NO es una variable: solo se pasa al init del paso 4)
@@ -108,8 +114,14 @@ terraform -chdir=terraform apply
 # 5. Dashboard (necesita el DNS del ALB, que solo existe después del apply)
 ALB=$(terraform -chdir=terraform output -raw alb_dns_name)
 BUCKET=$(terraform -chdir=terraform output -raw dashboard_bucket)
+REPLICA=$(terraform -chdir=terraform output -raw dashboard_replica_bucket)
 VITE_API_BASE="http://${ALB}" npm run build -w @snowball/dashboard
-aws s3 sync packages/dashboard/dist/ "s3://${BUCKET}/" --delete
+aws s3 sync packages/dashboard/dist/ "s3://${BUCKET}/" --delete --region us-east-1
+# El mismo build va al bucket replicado (vacío si la réplica está apagada)
+[ -n "${REPLICA}" ] && aws s3 sync packages/dashboard/dist/ "s3://${REPLICA}/" --delete   --region "$(terraform -chdir=terraform output -raw dashboard_replica_region)"
+# Las dos URLs: el host de S3 Website cambia de formato según la región, así que salen del output
+terraform -chdir=terraform output -raw dashboard_url; echo
+terraform -chdir=terraform output -raw dashboard_replica_url; echo
 
 # 6. Certificados IoT y simulador
 bash scripts/export-certs.sh
@@ -118,7 +130,9 @@ npm run simulator -- --endpoint "$(terraform -chdir=terraform output -raw iot_en
 
 # 7. Al terminar la sesión
 terraform -chdir=terraform destroy
-bash scripts/delete-buckets.sh <sufijo> <bucket-de-state>
+# Sin DASHBOARD_REPLICA_REGION el bucket replicado queda HUÉRFANO: Terraform no es su dueño
+# y, como los nombres de bucket son globales, el nombre queda tomado para la próxima sesión
+DASHBOARD_REPLICA_REGION=us-west-2 bash scripts/delete-buckets.sh <sufijo> <bucket-de-state>
 ```
 
 Después del `apply` hay que **confirmar la suscripción de SNS** desde el mail que
@@ -549,6 +563,24 @@ el certificado), agregar sus entradas en `scripts/seed-data.json` (`units` y
 
 ## Pendiente (fases siguientes)
 
+- **Suscripción MQTT sobre WebSockets.** La propuesta la promete y el feed en vivo
+  sigue siendo el WebSocket propio de la API, que consulta DynamoDB cada 3 s. Está
+  **documentada y no implementada**: requiere un custom authorizer de IoT, y crear uno
+  depende de que el SCP del Learner Lab permita `iot:CreateAuthorizer` y
+  `lambda:AddPermission` para `iot.amazonaws.com`, que es un spike **pendiente de
+  ejecución**. Diseño, spike y plan B en
+  [`docs/plan-mqtt-websockets.md`](docs/plan-mqtt-websockets.md).
+- **Replicación multi-región del backend** (DynamoDB Global Tables y una segunda región
+  de la API/ALB). Lo que ya está replicado es **solo el sitio estático** del dashboard.
+- El mapa usa los tiles públicos de OpenStreetMap y **los baja el navegador del usuario**,
+  no la VPC: no hay nada que abrir en los security groups, pero sin internet del lado del
+  cliente el fondo queda gris (los marcadores se siguen dibujando y la app no se rompe).
+  El servidor de OSM es *best effort* y sin SLA; para producción correspondería un
+  proveedor con garantías o self-hosting, que es cambiar la variable `VITE_TILE_URL`.
+- Leaflet llevó el bundle del dashboard de 158,21 kB a 311,97 kB de JS y de 3,10 kB a
+  19,55 kB de CSS. S3 Website no comprime al vuelo, así que el navegador baja esos bytes
+  crudos; se aceptó a propósito, porque los tiles dominan la transferencia del primer
+  encuadre y los nombres con hash se cachean hasta el próximo deploy.
 - Alertas de batería baja (`snowball-low-battery`): el tópico existe y queda
   **reservado**, pero ningún componente publica en él todavía.
 - HTTPS de punta a punta (requiere dominio y certificado ACM).

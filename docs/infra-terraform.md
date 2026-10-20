@@ -474,10 +474,15 @@ posterior al `apply` (el pipeline lo hace solo):
 ALB=$(terraform -chdir=terraform output -raw alb_dns_name)
 BUCKET=$(terraform -chdir=terraform output -raw dashboard_bucket)
 
+REPLICA=$(terraform -chdir=terraform output -raw dashboard_replica_bucket)
 VITE_API_BASE="http://${ALB}" npm run build -w @snowball/dashboard
-aws s3 sync packages/dashboard/dist/ "s3://${BUCKET}/" --delete
+aws s3 sync packages/dashboard/dist/ "s3://${BUCKET}/" --delete --region us-east-1
+# El mismo build va al bucket replicado (vacío si la réplica está apagada)
+[ -n "${REPLICA}" ] && aws s3 sync packages/dashboard/dist/ "s3://${REPLICA}/" --delete   --region "$(terraform -chdir=terraform output -raw dashboard_replica_region)"
 
-echo "Dashboard: http://${BUCKET}.s3-website-us-east-1.amazonaws.com"
+# Las dos URLs salen de los outputs: el host de S3 Website cambia de formato según la región
+terraform -chdir=terraform output -raw dashboard_url; echo
+terraform -chdir=terraform output -raw dashboard_replica_url; echo
 ```
 
 Hasta que hagas esto, la URL del sitio responde `404 NoSuchKey` (`index.html`):
@@ -613,9 +618,13 @@ Con el simulador corriendo, recorré el camino de los datos de punta a punta.
 
 **Dashboard**
 
-- [ ] Abrí `http://<dashboard_bucket>.s3-website-us-east-1.amazonaws.com`, iniciá
+- [ ] Abrí la URL de `terraform -chdir=terraform output -raw dashboard_url`, iniciá
   sesión y verificá que aparecen las tarjetas de las tres unidades actualizándose
-  en vivo (WebSocket) y el historial.
+  en vivo (WebSocket), el historial y el **mapa** con un marcador por unidad
+  coloreado según su estado.
+- [ ] Abrí la URL de `dashboard_replica_url` (la réplica de `us-west-2`) y repetí
+  la verificación: tiene que funcionar igual, porque apunta al mismo ALB. En
+  DevTools no debe haber errores de CORS (`cors_origin` tiene que seguir en `*`).
 - [ ] Panel de configuración (setpoint remoto vía Device Shadow): al cambiarlo, la
   unidad lo aplica a los pocos segundos y el simulador lo imprime.
 
