@@ -70,12 +70,26 @@ describe('PUT /units/:id/config', () => {
     expect((await put('/units/SB-001/config', supervisor1, { setpoint_c: -30 })).status).toBe(400);
   });
 
-  test('threshold-only edit updates RDS and never touches the shadow', async () => {
+  test('threshold edit updates DynamoDB and the shadow desired state', async () => {
     const res = await put('/units/SB-001/config', supervisor1, { temp_max_c: -14 });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ unit_id: 'SB-001', setpoint_c: -18, temp_min_c: -25, temp_max_c: -14, tolerance_min: 5 });
-    expect(shadow.updateDesired).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(body).toEqual({ unit_id: 'SB-001', setpoint_c: -18, temp_min_c: -25, temp_max_c: -14, tolerance_min: 5 });
+    expect(body.warning).toBeUndefined();
+    expect(shadow.updateDesired).toHaveBeenCalledWith('SB-001', { temp_max_c: -14 });
     expect(configs[0].temp_max_c).toBe(-14);
+  });
+
+  test('sends only the patched fields to the shadow', async () => {
+    const res = await put('/units/SB-001/config', supervisor1, { temp_min_c: -24, tolerance_min: 7 });
+    expect(res.status).toBe(200);
+    expect(shadow.updateDesired).toHaveBeenCalledTimes(1);
+    expect(shadow.updateDesired).toHaveBeenCalledWith('SB-001', { temp_min_c: -24, tolerance_min: 7 });
+  });
+
+  test('validation failure never reaches the shadow', async () => {
+    expect((await put('/units/SB-001/config', supervisor1, { temp_min_c: -10 })).status).toBe(400);
+    expect(shadow.updateDesired).not.toHaveBeenCalled();
   });
 
   test('setpoint edit updates RDS and the shadow desired state', async () => {
@@ -85,14 +99,12 @@ describe('PUT /units/:id/config', () => {
     expect((await res.json()).warning).toBeUndefined();
   });
 
-  test('shadow failure keeps the RDS write and returns 200 with a warning', async () => {
+  test('shadow failure returns 502 and leaves DynamoDB untouched', async () => {
     shadow.updateDesired.mockRejectedValueOnce(new Error('iot down'));
     const res = await put('/units/SB-001/config', supervisor1, { setpoint_c: -21 });
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.setpoint_c).toBe(-21);
-    expect(body.warning).toBe('shadow update failed');
-    expect(configs[0].setpoint_c).toBe(-21); // RDS write survived the shadow failure
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'shadow update failed' });
+    expect(configs[0].setpoint_c).toBe(-18); // the shadow is written first; DynamoDB never saw the patch
   });
 });
 
@@ -135,6 +147,7 @@ describe('without IOT_ENDPOINT', () => {
         body: JSON.stringify({ temp_max_c: -14 }),
       });
       expect(thresholdRes.status).toBe(200); // threshold-only edits still work without a shadow client
+      expect((await thresholdRes.json()).warning).toBe('shadow not configured');
       const shadowRes = await fetch(`${b}/units/SB-001/shadow`, { headers: { Authorization: `Bearer ${supervisor1}` } });
       expect(shadowRes.status).toBe(503);
     } finally {

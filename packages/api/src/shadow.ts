@@ -4,6 +4,7 @@ import {
   ResourceNotFoundException,
   UpdateThingShadowCommand,
 } from '@aws-sdk/client-iot-data-plane';
+import type { DeviceConfig, DeviceShadowState } from '@snowball/shared';
 
 /**
  * Classic (unnamed) Device Shadow access. The interface is what the routes
@@ -12,15 +13,13 @@ import {
  * `aws iot-data get-thing-shadow --thing-name SB-001 /dev/stdout`.
  */
 
-export interface ShadowState {
-  desired: Record<string, unknown>;
-  reported: Record<string, unknown>;
-}
+export type ShadowState = DeviceShadowState;
 
 export interface ShadowClient {
   /** undefined when the thing has no shadow yet (device never reported). */
   get(thingName: string): Promise<ShadowState | undefined>;
-  updateDesired(thingName: string, desired: Record<string, unknown>): Promise<void>;
+  /** Merges `desired` into the shadow's desired state (keys not sent are preserved). */
+  updateDesired(thingName: string, desired: Partial<DeviceConfig>): Promise<void>;
 }
 
 export function createIotShadowClient(endpoint: string): ShadowClient {
