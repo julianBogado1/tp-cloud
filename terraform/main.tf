@@ -100,7 +100,67 @@ resource "aws_s3_bucket_policy" "dashboard" {
       Resource  = "arn:aws:s3:::${local.bucket_names.dashboard}/*"
     }]
   })
-  depends_on = [aws_s3_bucket_website_configuration.dashboard]
+  # S3 enables Block Public Access on every new bucket, and BlockPublicPolicy
+  # rejects a PutBucketPolicy with Principal "*". The PAB must be opened first.
+  depends_on = [
+    aws_s3_bucket_public_access_block.dashboard,
+    aws_s3_bucket_website_configuration.dashboard,
+  ]
+}
+
+# Replicated dashboard website, same configuration as above in a second region.
+# The bucket itself is created by scripts/bootstrap-buckets.sh (the Learner Lab
+# SCP denies s3:GetBucketObjectLockConfiguration, so aws_s3_bucket is unusable);
+# DASHBOARD_REPLICA_REGION in that script must match var.dashboard_replica_region.
+# The top-level `region` argument (AWS provider v6 enhanced region support)
+# replaces an aliased provider: a single provider keeps default_tags in one
+# place and makes it explicit that the IAM data sources are global.
+# var.dashboard_replica_region = "" disables all four resources.
+resource "aws_s3_bucket_server_side_encryption_configuration" "dashboard_replica" {
+  count  = var.dashboard_replica_region == "" ? 0 : 1
+  region = var.dashboard_replica_region
+  bucket = local.bucket_names.dashboard_replica
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "dashboard_replica" {
+  count                   = var.dashboard_replica_region == "" ? 0 : 1
+  region                  = var.dashboard_replica_region
+  bucket                  = local.bucket_names.dashboard_replica
+  block_public_acls       = false
+  block_public_policy     = false
+  ignore_public_acls      = false
+  restrict_public_buckets = false
+}
+
+resource "aws_s3_bucket_website_configuration" "dashboard_replica" {
+  count  = var.dashboard_replica_region == "" ? 0 : 1
+  region = var.dashboard_replica_region
+  bucket = local.bucket_names.dashboard_replica
+  index_document { suffix = "index.html" }
+}
+
+resource "aws_s3_bucket_policy" "dashboard_replica" {
+  count  = var.dashboard_replica_region == "" ? 0 : 1
+  region = var.dashboard_replica_region
+  bucket = local.bucket_names.dashboard_replica
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = "*"
+      Action    = "s3:GetObject"
+      Resource  = "arn:aws:s3:::${local.bucket_names.dashboard_replica}/*"
+    }]
+  })
+  depends_on = [
+    aws_s3_bucket_public_access_block.dashboard_replica,
+    aws_s3_bucket_website_configuration.dashboard_replica,
+  ]
 }
 
 module "iot_ingest" {

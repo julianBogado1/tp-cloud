@@ -86,6 +86,9 @@ runs:
         terraform_wrapper: false
 
     # Solo en workflow_dispatch: el plan de un PR no debe crear recursos.
+    # La región de la réplica del dashboard llega por el env del job
+    # (DASHBOARD_REPLICA_REGION), igual que las TF_VAR_*: es opcional y tiene
+    # default, así que no entra en la lista de obligatorias del gate.
     - name: Crear buckets (idempotente)
       if: steps.gate.outputs.ready == 'true' && github.event_name != 'pull_request'
       shell: bash

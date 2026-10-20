@@ -24,6 +24,11 @@ locals {
     dashboard = "snowball-dashboard-${var.bucket_suffix}"
     artifacts = "snowball-artifacts-${var.bucket_suffix}"
     archive   = "snowball-archive-${var.bucket_suffix}"
+    # Globally unique name for the replica: bucket names are global, so the region
+    # goes in the name. 19 + len(suffix) + 10 chars; S3 allows 63. With
+    # dashboard_replica_region = "" nothing references this name (every replica
+    # resource has count = 0) and the outputs blank it out.
+    dashboard_replica = "snowball-dashboard-${var.bucket_suffix}-${var.dashboard_replica_region}"
   }
   lambdas = {
     "telemetry-export" = {

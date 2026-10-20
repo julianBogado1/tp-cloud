@@ -3,6 +3,15 @@ variable "region" {
   description = "AWS region to deploy into."
   default     = "us-east-1"
 }
+variable "dashboard_replica_region" {
+  type        = string
+  description = "Region for the replicated dashboard website bucket. Empty disables the replica. The Learner Lab only allows us-east-1 and us-west-2."
+  default     = "us-west-2"
+  validation {
+    condition     = contains(["", "us-east-1", "us-west-2"], var.dashboard_replica_region)
+    error_message = "dashboard_replica_region must be \"\" (disabled), us-east-1 or us-west-2: the Learner Lab denies access to other regions."
+  }
+}
 variable "project" {
   type        = string
   description = "Project name, used for tags and resource names."

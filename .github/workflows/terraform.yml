@@ -33,6 +33,10 @@ defaults:
 
 env:
   AWS_REGION: us-east-1
+  # Región de la réplica del sitio estático. Una sola fuente de verdad para
+  # bootstrap-buckets.sh, delete-buckets.sh y Terraform. Vacía = sin réplica.
+  DASHBOARD_REPLICA_REGION: ${{ vars.DASHBOARD_REPLICA_REGION || 'us-west-2' }}
+  TF_VAR_dashboard_replica_region: ${{ vars.DASHBOARD_REPLICA_REGION || 'us-west-2' }}
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
   # Credenciales temporales del Learner Lab (rotan en cada sesión)
@@ -166,14 +170,25 @@ jobs:
         run: |
           ALB="$(terraform -chdir=terraform output -raw alb_dns_name)"
           BUCKET="$(terraform -chdir=terraform output -raw dashboard_bucket)"
+          # Vacío cuando la réplica está apagada: por eso el if y no un sync fijo.
+          REPLICA_BUCKET="$(terraform -chdir=terraform output -raw dashboard_replica_bucket)"
           VITE_API_BASE="http://${ALB}" npm run build -w @snowball/dashboard
-          aws s3 sync packages/dashboard/dist/ "s3://${BUCKET}/" --delete
+          aws s3 sync packages/dashboard/dist/ "s3://${BUCKET}/" --delete --region "${AWS_REGION}"
+          if [ -n "${REPLICA_BUCKET}" ]; then
+            aws s3 sync packages/dashboard/dist/ "s3://${REPLICA_BUCKET}/" --delete \
+              --region "${DASHBOARD_REPLICA_REGION}"
+          fi
           {
             echo "### Despliegue"
             echo "- API: http://${ALB}"
-            echo "- Dashboard: http://${BUCKET}.s3-website-us-east-1.amazonaws.com"
+            # Las URLs salen de los outputs: el host de S3 Website cambia de formato por región.
+            echo "- Dashboard (${AWS_REGION}): $(terraform -chdir=terraform output -raw dashboard_url)"
+            if [ -n "${REPLICA_BUCKET}" ]; then
+              echo "- Dashboard réplica (${DASHBOARD_REPLICA_REGION}): $(terraform -chdir=terraform output -raw dashboard_replica_url)"
+            fi
             echo "- IoT endpoint: $(terraform -chdir=terraform output -raw iot_endpoint)"
             echo ""
+            echo "Las dos URLs sirven el mismo build y consultan el mismo ALB de ${AWS_REGION}."
             echo "Los certificados IoT se bajan en tu máquina con scripts/export-certs.sh."
           } >> "$GITHUB_STEP_SUMMARY"
 
