@@ -177,6 +177,10 @@ jobs:
             echo "Los certificados IoT se bajan en tu máquina con scripts/export-certs.sh."
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Sincronizar Device Shadows
+        if: inputs.action == 'apply'
+        run: npx tsx scripts/sync-shadows.ts --endpoint "$(terraform -chdir=terraform output -raw iot_endpoint)"
+
       - name: terraform destroy
         if: inputs.action == 'destroy'
         working-directory: terraform

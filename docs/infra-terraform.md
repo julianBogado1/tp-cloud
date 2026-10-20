@@ -478,6 +478,25 @@ aws elbv2 describe-target-health --target-group-arn "$TG" \
 
 Hasta entonces el ALB responde `502`/`503`.
 
+### 10.4 Sincronizar los Device Shadows
+
+El setpoint y los umbrales viajan a cada unidad por el `desired` de su Device
+Shadow. Los shadows son estado de ejecución, no infraestructura, así que no los
+gestiona Terraform: después del `apply` hay que copiar la configuración de
+`snowball-device-config` al `desired` de cada unidad (el pipeline lo hace solo).
+Es idempotente: reescribe lo que DynamoDB ya tiene.
+
+```bash
+EP=$(terraform -chdir=terraform output -raw iot_endpoint)
+npx tsx scripts/sync-shadows.ts --endpoint "$EP"          # --dry-run para ver sin escribir
+aws iot-data get-thing-shadow --thing-name SB-001 /dev/stdout | jq .state.desired
+```
+
+Debe imprimir `SB-001 → {…}` por unidad y el `desired` debe tener los cuatro
+campos (`setpoint_c`, `temp_min_c`, `temp_max_c`, `tolerance_min`). No hace
+falta ningún permiso nuevo: la política IoT ya cubre `shadow/*` y el rol del Lab
+permite `UpdateThingShadow`.
+
 ---
 
 ## 11. Certificados y simulador
@@ -596,8 +615,18 @@ Con el simulador corriendo, recorré el camino de los datos de punta a punta.
 - [ ] Abrí `http://<dashboard_bucket>.s3-website-us-east-1.amazonaws.com`, iniciá
   sesión y verificá que aparecen las tarjetas de las tres unidades actualizándose
   en vivo (WebSocket) y el historial.
-- [ ] Panel de configuración (setpoint remoto vía Device Shadow): al cambiarlo, la
-  unidad lo aplica a los pocos segundos y el simulador lo imprime.
+- [ ] **Backfill** (ver [10.4](#104-sincronizar-los-device-shadows)): después de
+  `sync-shadows.ts`, `get-thing-shadow` de SB-001 muestra en `desired` los cuatro
+  campos con los valores de `snowball-device-config`.
+- [ ] **Cambio en línea**: con el simulador corriendo (imprime `shadow loaded: {…}`
+  al conectar), como supervisor cambiá `Máximo` y `Tolerancia` y guardá. Aparece
+  `Guardado y enviado al equipo`, las dos filas muestran `pendiente`, a los ~3 s el
+  simulador imprime `config applied and reported: {…}` y en ~6 s las marcas
+  desaparecen solas. `get-thing-shadow` muestra `desired` = `reported` y sin `delta`.
+- [ ] **Orden con la unidad desconectada**: frená el simulador, cambiá el
+  `Setpoint` y guardá. La fila queda `pendiente`; a los 2 min aparece «El equipo
+  todavía no confirmó…» y el dashboard deja de consultar. Al volver a levantar el
+  simulador, `shadow loaded` incluye el setpoint nuevo y las lecturas se acercan a él.
 
 **Alertas**
 
