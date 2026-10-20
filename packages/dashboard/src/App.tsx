@@ -96,7 +96,7 @@ function Dashboard({ session, onLogout }: { session: Session; onLogout: () => vo
     setUnits((prev) =>
       prev?.map((u) =>
         u.unit_id === config.unit_id
-          ? { ...u, setpoint_c: config.setpoint_c, temp_min_c: config.temp_min_c, temp_max_c: config.temp_max_c }
+          ? { ...u, setpoint_c: config.setpoint_c, temp_min_c: config.temp_min_c, temp_max_c: config.temp_max_c, tolerance_min: config.tolerance_min }
           : u,
       ) ?? prev,
     );

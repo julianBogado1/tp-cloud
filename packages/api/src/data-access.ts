@@ -16,6 +16,7 @@ export interface UnitRow {
   setpoint_c: number | null;
   temp_min_c: number | null;
   temp_max_c: number | null;
+  tolerance_min: number | null;
 }
 
 export interface AlertRow {

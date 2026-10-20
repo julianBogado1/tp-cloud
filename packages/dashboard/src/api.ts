@@ -1,4 +1,4 @@
-import type { IngestedReading, ThresholdConfig } from '@snowball/shared';
+import type { DeviceConfig, DeviceShadowState, IngestedReading, ThresholdConfig } from '@snowball/shared';
 import { clearSession, getSession, type Role, type Session, type SessionUser } from './auth';
 import { deriveWsUrl } from './status';
 
@@ -18,6 +18,7 @@ export interface UnitWithReading {
   setpoint_c: number | null;
   temp_min_c: number | null;
   temp_max_c: number | null;
+  tolerance_min: number | null;
   last_reading: IngestedReading | null;
 }
 
@@ -42,12 +43,11 @@ export interface UserRow {
   active: boolean;
 }
 
-export interface ShadowState {
-  desired: { setpoint_c?: number };
-  reported: { setpoint_c?: number };
-}
+export type ShadowState = DeviceShadowState;
 
-export type ConfigPatch = Partial<Pick<ThresholdConfig, 'setpoint_c' | 'temp_min_c' | 'temp_max_c' | 'tolerance_min'>>;
+export type ConfigPatch = Partial<DeviceConfig>;
+
+export type ConfigSaveResult = ThresholdConfig & { warning?: 'shadow not configured' };
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -97,7 +97,7 @@ export const fetchAlerts = () => request<AlertRow[]>('GET', '/api/alerts');
 export const ackAlert = (id: number) => request<AlertRow>('POST', `/api/alerts/${id}/ack`);
 export const fetchShadow = (unitId: string) => request<ShadowState>('GET', `/api/units/${encodeURIComponent(unitId)}/shadow`);
 export const updateConfig = (unitId: string, patch: ConfigPatch) =>
-  request<ThresholdConfig & { warning?: string }>('PUT', `/api/units/${encodeURIComponent(unitId)}/config`, patch);
+  request<ConfigSaveResult>('PUT', `/api/units/${encodeURIComponent(unitId)}/config`, patch);
 export const fetchUsers = () => request<UserRow[]>('GET', '/api/users');
 export const createUser = (input: { email: string; password: string; role: Role; client_id: number | null }) =>
   request<UserRow>('POST', '/api/users', input);

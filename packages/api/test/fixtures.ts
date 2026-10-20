@@ -6,8 +6,8 @@ import { DuplicateEmailError, type DataAccess, type UserRecord } from '../src/da
 export const secret = 's'.repeat(32);
 
 export const units = [
-  { unit_id: 'SB-001', client_id: 1, description: 'Reefer BA-MDQ', active: true, setpoint_c: -18, temp_min_c: -25, temp_max_c: -15 },
-  { unit_id: 'SB-003', client_id: 2, description: 'Furgón vacunas', active: true, setpoint_c: 5, temp_min_c: 2, temp_max_c: 8 },
+  { unit_id: 'SB-001', client_id: 1, description: 'Reefer BA-MDQ', active: true, setpoint_c: -18, temp_min_c: -25, temp_max_c: -15, tolerance_min: 5 },
+  { unit_id: 'SB-003', client_id: 2, description: 'Furgón vacunas', active: true, setpoint_c: 5, temp_min_c: 2, temp_max_c: 8, tolerance_min: 1 },
 ];
 export const alerts = [
   { id: 1, unit_id: 'SB-001', severity: 'thermal-excursion', since: '2026-08-30T09:00:00Z', emitted_at: '2026-08-30T09:06:00Z', duration_min: 6, temp_c: -12.5, detail: 'sustained -12.5°C', acknowledged_by: null, acknowledged_at: null },
