@@ -41,6 +41,33 @@ export interface ThresholdConfig {
   setpoint_c: number;
 }
 
+/** The fields an operator can change remotely; order is the UI order. */
+export const DEVICE_CONFIG_FIELDS = ['setpoint_c', 'temp_min_c', 'temp_max_c', 'tolerance_min'] as const;
+
+export type DeviceConfigField = (typeof DEVICE_CONFIG_FIELDS)[number];
+
+/** Config as the device sees it (no unit_id): the payload of shadow desired/reported. */
+export type DeviceConfig = Pick<ThresholdConfig, DeviceConfigField>;
+
+/** Shape of the classic shadow's `state` for this project. */
+export interface DeviceShadowState {
+  desired: Partial<DeviceConfig>;
+  reported: Partial<DeviceConfig>;
+}
+
+/**
+ * Keeps only DEVICE_CONFIG_FIELDS whose value is a finite number.
+ * Used to sanitize HTTP bodies, shadow deltas and DynamoDB rows alike.
+ */
+export function pickDeviceConfig(source: Record<string, unknown>): Partial<DeviceConfig> {
+  const config: Partial<DeviceConfig> = {};
+  for (const field of DEVICE_CONFIG_FIELDS) {
+    const value = source[field];
+    if (typeof value === 'number' && Number.isFinite(value)) config[field] = value;
+  }
+  return config;
+}
+
 export type ExcursionPhase = 'ok' | 'deviated' | 'alerted';
 
 export interface ExcursionState {
