@@ -55,10 +55,8 @@ caída del pipeline** (ninguna unidad llega). Las dos publican en
 | Documento | Para qué |
 |---|---|
 | [`docs/infra-terraform.md`](docs/infra-terraform.md) | **Guía vigente**: levantar todo con Terraform en el Learner Lab, paso a paso, con verificación, pipeline, destroy y troubleshooting |
-| [`docs/dynamodb-model.md`](docs/dynamodb-model.md) | Modelo de tablas DynamoDB: claves, GSIs y qué consulta cubre cada uno |
 | [`docs/terraform-buckets-learner-lab.md`](docs/terraform-buckets-learner-lab.md) | Por qué los buckets se crean por script y no por Terraform |
 | [`docs/features-faltantes-propuesta.md`](docs/features-faltantes-propuesta.md) | Relevamiento de lo que falta respecto de la propuesta formal de la Entrega 1 (features, multi-región y requisitos no funcionales) |
-| [`docs/plan-sin-senal.md`](docs/plan-sin-senal.md) | Plan y decisiones de diseño de la alerta de «sin señal» por unidad (incluye la alternativa descartada de una alarma de CloudWatch por unidad) |
 | [`docs/plan-mapa-unidades.md`](docs/plan-mapa-unidades.md) | Plan del mapa de unidades por estado (**implementado**): Leaflet puro sin `react-leaflet`, color desde las variables CSS de la paleta y tiles de OpenStreetMap con su política de uso |
 | [`docs/plan-replica-dashboard.md`](docs/plan-replica-dashboard.md) | Plan de la réplica del sitio estático por región (**implementado**): dual-deploy contra la alternativa descartada de Cross-Region Replication, y qué se puede y qué no se puede prometer sin Route 53 |
 | [`docs/plan-mqtt-websockets.md`](docs/plan-mqtt-websockets.md) | Plan de la suscripción MQTT sobre WebSockets contra IoT Core (**documentado, no implementado**): custom authorizer, el spike de permisos que lo bloquea y el plan B |
@@ -139,6 +137,31 @@ terraform -chdir=terraform destroy
 DASHBOARD_REPLICA_REGION=us-west-2 bash scripts/delete-buckets.sh <sufijo> <bucket-de-state>
 ```
 
+### Variables obligatorias
+
+El paso 2 («completarlo») son estas **5 variables, que no tienen default**. Si
+falta alguna, `plan` y `apply` la piden por prompt en vez de fallar, así que es
+fácil no darse cuenta hasta que el apply queda esperando una respuesta:
+
+| Variable | Qué poner | Dónde se usa |
+|---|---|---|
+| `bucket_suffix` | Sufijo único global para los buckets; **tiene que coincidir** con el `<sufijo>` del paso 1 | Nombres de los buckets de dashboard, artifacts y archive |
+| `key_name` | Nombre de un key pair de EC2 que ya exista (en el Learner Lab es `vockey`) | Launch template y bastión |
+| `jwt_secret` | Secreto para firmar los JWT de la API (`openssl rand -base64 32`) | User data de las EC2 (`sensitive`) |
+| `sns_subscription_email` | Mail donde llegan las alertas; hay que **confirmar la suscripción** desde ese mail | Suscripción a los tópicos térmico y sin señal (validado con `can` + `regex`) |
+| `bastion_allowed_cidr` | CIDR público autorizado a SSH, p. ej. `tu.ip.publica/32` | Security group del bastión. **Es obligatoria aunque `enable_bastion = false`**: el security group se crea igual |
+
+El resto de las variables (`variables.tf`) tiene defaults razonables y no hace
+falta tocarlas: región, `project`, CIDR de la VPC y zonas, tipo de instancia y
+tamaño del ASG, rutas de los bundles y ZIPs, unidades IoT, crons, timeout de
+«sin señal», días hasta Glacier y `dashboard_replica_region`. Las validaciones
+(`vpc_cidr`, `dashboard_replica_region`, el mail, `no_signal_timeout_min`,
+`archive_glacier_days`) cortan el plan con un mensaje explícito si algo no
+cuadra.
+
+El bucket de state **no es una variable de Terraform**: se pasa al `init` por
+`-backend-config`.
+
 Después del `apply` hay que **confirmar la suscripción de SNS** desde el mail que
 llega a `sns_subscription_email`. El backend usa el **bloqueo nativo de S3**
 (`use_lockfile = true`, Terraform ≥ 1.10), el equivalente moderno del clásico
@@ -174,7 +197,7 @@ los crea `scripts/bootstrap-buckets.sh` antes del `init` (ver abajo por qué).
 | `data` | Las 7 tablas DynamoDB (`telemetry`, `unit-state`, `users`, `clients`, `units`, `alerts`, `device-config`) a partir de un único mapa de definiciones, con GSIs y TTL en bloques `dynamic`, y la carga de datos demo desde `scripts/seed-data.json` |
 | `messaging` | Cola `snowball-readings` (visibilidad 180 s) con DLQ (5 recepciones), tópicos SNS (térmico, sin señal y batería —reservado, sin publicador—), suscripción por mail a los dos tópicos con publicador (térmico y sin señal, con `for_each`) y alarma de flota «sin señal» |
 | `iot-ingest` | Policy `snowball-device-policy` (cada dispositivo solo ve sus tópicos), thing + certificado X.509 por unidad y regla `snowball_telemetry` con acciones a DynamoDB (×2) y SQS, más `error_action` a CloudWatch Logs |
-| `compute` | Subida del bundle de la API a S3, target group, ALB, launch template con user data (`templatefile`) y `tag_specifications`, Auto Scaling Group (2–4 `t3.small` por defecto, en subredes privadas) con *instance refresh* automático, y bastión opcional. Las EC2 corren **solo la API** |
+| `compute` | Subida del bundle de la API a S3, target group, ALB, launch template con user data (`templatefile`) y `tag_specifications`, Auto Scaling Group (2–4 `t3.small` por defecto, en subredes privadas) **sin `instance_refresh`** (el SCP del Lab lo deniega, ver [Despliegue de un bundle nuevo](#despliegue-de-un-bundle-nuevo)), y bastión opcional. Las EC2 corren **solo la API** |
 | `lambda-function` | Lambda genérica (ZIP, `nodejs22.x`, `LabRole`, fuera de la VPC) con su log group. La raíz la instancia con `for_each` sobre `local.lambdas`: `telemetry-export`, `alert-processor` y `no-signal-monitor` |
 
 **Módulo externo** (Terraform Registry): `terraform-aws-modules/cloudwatch/aws//modules/metric-alarm`
@@ -238,33 +261,35 @@ entrega.)
 | Función | Dónde | Para qué |
 |---|---|---|
 | `cidrsubnet` | `modules/network/main.tf:3-6` | Deriva los CIDR de las 4 subredes a partir del CIDR de la VPC |
-| `toset` | `locals.tf:22`, `main.tf:35`, `modules/messaging/main.tf:21`, `modules/network/main.tf:47,63` | Convierte listas en conjuntos para usarlas con `for_each` (unidades, buckets privados, tópicos con suscripción por mail, asociaciones de subredes) |
-| `jsonencode` | `main.tf:94`, `modules/iot-ingest/main.tf:8`, `modules/messaging/main.tf:9`, `modules/data/main.tf:74` | Arma la policy del bucket del dashboard, la policy de IoT, la redrive policy de SQS y los ítems del seed |
+| `toset` | `locals.tf:22`, `main.tf:35`, `modules/messaging/main.tf:20`, `modules/network/main.tf:47,63` | Convierte listas en conjuntos para usarlas con `for_each` (unidades, buckets privados, tópicos con suscripción por mail, asociaciones de subredes) |
+| `jsonencode` | `main.tf:94,151`, `modules/iot-ingest/main.tf:8`, `modules/messaging/main.tf:9`, `modules/data/main.tf:74` | Arma las policies de los buckets del dashboard (principal y réplica), la policy de IoT, la redrive policy de SQS y los ítems del seed |
 | `file` + `jsondecode` | `modules/data/main.tf:11` | Lee y parsea `scripts/seed-data.json` |
 | `merge` | `modules/data/main.tf:12`, `modules/compute/main.tf:80,84` | Une los ítems del seed de distintas entidades en un único mapa; agrega `Name` a los tags comunes de instancias y volúmenes del ASG |
 | `lookup` | `modules/data/main.tf:73` | Obtiene la clave de rango de una tabla solo si está definida |
 | `try` | `modules/data/main.tf:44,55`, `modules/compute/outputs.tf:4` | Tolera GSIs sin rango y el bastión ausente |
 | `templatefile` + `base64encode` | `modules/compute/main.tf:62` | Renderiza el user data de las EC2 con nombres de tablas, endpoint de IoT, origen CORS y secretos |
-| `filemd5` | `modules/compute/main.tf:21,65` | Detecta cambios en el bundle de la API: vuelve a subirlo a S3 y, al renderizarse en el user data, genera una versión nueva del launch template que dispara el *instance refresh* |
+| `filemd5` | `modules/compute/main.tf:21,65` | Detecta cambios en el bundle de la API: vuelve a subirlo a S3 y, al renderizarse en el user data, genera una versión nueva del launch template (el rollout a las instancias es manual, ver [Despliegue de un bundle nuevo](#despliegue-de-un-bundle-nuevo)) |
 | `filebase64sha256` | `modules/lambda-function/main.tf:10` | Detecta cambios en el ZIP de cada Lambda |
-| `format` | `modules/messaging/main.tf:41` | Arma el nombre de la alarma |
-| `tostring` | `locals.tf:66` | Pasa `no_signal_timeout_min` (número) al environment de la Lambda, que solo acepta strings |
-| `can` + `cidrhost` | `variables.tf:30` | Validación de `vpc_cidr` (tiene que ser un CIDR IPv4 válido) |
-| `can` + `regex` | `variables.tf:61` | Validación de `sns_subscription_email` |
+| `format` | `modules/messaging/main.tf:40` | Arma el nombre de la alarma |
+| `tostring` | `locals.tf:70` | Pasa `no_signal_timeout_min` (número) al environment de la Lambda, que solo acepta strings |
+| `join` + `for` | `outputs.tf:35` | Devuelve `""` en `dashboard_replica_url` cuando la réplica está apagada, sin indexar `[0]` sobre una lista vacía |
+| `can` + `cidrhost` | `variables.tf:39` | Validación de `vpc_cidr` (tiene que ser un CIDR IPv4 válido) |
+| `can` + `regex` | `variables.tf:70` | Validación de `sns_subscription_email` |
+| `contains` | `variables.tf:11` | Validación de `dashboard_replica_region` (el Learner Lab solo habilita `us-east-1` y `us-west-2`) |
 
 ### Meta-argumentos utilizados
 
 | Meta-argumento | Dónde | Para qué |
 |---|---|---|
-| `for_each` | `main.tf:35,149`; `modules/data/main.tf:20,70`; `modules/iot-ingest/main.tf:38,42,46,51`; `modules/network/main.tf:16,47,52,57,63,69`; `modules/messaging/main.tf:14,21` | Una instancia por bucket privado, por Lambda (`module "lambda"` sobre `local.lambdas`), por tabla y por ítem del seed, por unidad IoT (thing + certificado + attachments), por subred, por ruta, por endpoint, por tópico SNS y por suscripción de mail (los dos tópicos con publicador), sin repetir código |
-| `count` | `modules/compute/main.tf:113` | Bastión opcional (`enable_bastion`) |
-| `depends_on` | `main.tf:103`; `modules/network/main.tf:34`; `modules/data/main.tf:75`; `modules/compute/main.tf:89`; `modules/lambda-function/main.tf:21` | Orden explícito donde Terraform no lo infiere: policy tras el website, NAT tras el IGW, seed tras las tablas, launch template tras el bundle, Lambda tras su log group (si no, una invocación temprana crearía el grupo sin retención) |
+| `for_each` | `main.tf:35,209`; `modules/data/main.tf:20,70`; `modules/iot-ingest/main.tf:38,42,46,51`; `modules/network/main.tf:16,47,52,57,63,69`; `modules/messaging/main.tf:14,20` | Una instancia por bucket privado, por Lambda (`module "lambda"` sobre `local.lambdas`), por tabla y por ítem del seed, por unidad IoT (thing + certificado + attachments), por subred, por ruta, por endpoint, por tópico SNS y por suscripción de mail (los dos tópicos con publicador), sin repetir código |
+| `count` | `main.tf:120,131,141,148`; `modules/compute/main.tf:111` | Interruptor de la réplica del dashboard (las 4 configuraciones quedan en 0 instancias con `dashboard_replica_region = ""`) y bastión opcional (`enable_bastion`) |
+| `depends_on` | `main.tf:105,160`; `modules/network/main.tf:34`; `modules/data/main.tf:75`; `modules/compute/main.tf:89`; `modules/lambda-function/main.tf:21` | Orden explícito donde Terraform no lo infiere: policies (principal y réplica) tras el website y el Public Access Block, NAT tras el IGW, seed tras las tablas, launch template tras el bundle, Lambda tras su log group (si no, una invocación temprana crearía el grupo sin retención) |
 | `lifecycle` | `modules/compute/main.tf:86-88` | `create_before_destroy` en el launch template, para que su reemplazo no deje al ASG sin plantilla |
 
 Además se usan bloques `dynamic` (`modules/data/main.tf:29-65`) para generar
-atributos, GSIs y TTL a partir de datos, y bloques `moved`: `main.tf:201-212`
+atributos, GSIs y TTL a partir de datos, y bloques `moved`: `main.tf:260-271`
 para la migración de `module.export` a `module.lambda`, y
-`modules/messaging/main.tf:29-32` para que el pase de `count` a `for_each` en la
+`modules/messaging/main.tf:28-31` para que el pase de `count` a `for_each` en la
 suscripción por mail no destruya la del tópico térmico (si no, habría que
 reconfirmar el mail).
 
@@ -278,7 +303,7 @@ outputs que se pasan (`module.data.table_names`, `module.iot_ingest.iot_endpoint
 ### Módulo externo
 
 `terraform-aws-modules/cloudwatch/aws//modules/metric-alarm` (`~> 5.0`) en
-`modules/messaging/main.tf:26-42` (fuente en la línea 27).
+`modules/messaging/main.tf:36-52` (fuente en la línea 37).
 
 ### DRY y convenciones
 
@@ -327,6 +352,24 @@ mismo state.
 `validate` y `app` corren siempre y son los que pueden poner un PR en rojo
 (código sin formatear, Terraform inválido, tests rotos).
 
+> **Importante al revisar un PR: verde no significa «el plan corrió».**
+> El job `plan` sale en verde en dos casos distintos, y hay que mirar los
+> steps para distinguirlos:
+>
+> - **Plan ejecutado:** el step *terraform plan* corrió y hay un comentario con
+>   el plan en el PR.
+> - **Plan omitido:** el step *terraform plan* figura como `skipped` y en el
+>   resumen del run aparece un `::warning` que dice por qué (faltan
+>   secrets/variables, credenciales vencidas o no existe el bucket de state).
+>
+> Es deliberado: un PR no debería quedar en rojo por credenciales temporales
+> que vencen cada ~4 h ni por correr en un fork, donde GitHub no entrega
+> secrets. Pero implica que **el plan del PR solo corre de verdad si el repo
+> donde se abre el PR tiene las 9 secrets/variables cargadas y el bucket de
+> state ya existe.** Como en un PR el bootstrap no crea nada, el orden es:
+> primero un `workflow_dispatch` con `action: apply` (que crea los buckets),
+> y a partir de ahí los planes de los PR se ejecutan y se comentan solos.
+
 ### Por qué el `apply` es manual
 
 El `apply` no se dispara solo con un `push` a `main`: las credenciales del
@@ -356,15 +399,58 @@ de verificar el apply desde la rama.)
 Detalle completo en la sección 13 de
 [`docs/infra-terraform.md`](docs/infra-terraform.md).
 
+### Despliegue de un bundle nuevo
+
+El ASG **no tiene `instance_refresh`**: el SCP del Learner Lab deniega
+`autoscaling:StartInstanceRefresh`, y el provider llama a esa acción en cada
+cambio del grupo, así que con el bloque presente todo `apply` terminaba en
+`AccessDenied` aunque el grupo se creara bien (`modules/compute/main.tf:103-108`).
+
+La consecuencia es que un bundle nuevo **no llega solo a las instancias que ya
+están corriendo**. El `apply` sí deja todo listo: sube `api.bundle.js` al bucket
+de artifacts (`filemd5` detecta el cambio) y crea una versión nueva del launch
+template, que es la que usarán las instancias que arranquen de ahí en adelante.
+Para que las que ya existen tomen el bundle nuevo hay que reemplazarlas:
+
+```bash
+npm run bundle && terraform -chdir=terraform apply
+```
+
+```bash
+aws autoscaling describe-auto-scaling-groups \
+  --auto-scaling-group-names snowball-app-asg \
+  --query 'AutoScalingGroups[0].Instances[].InstanceId' --output text
+```
+
+Después, **de a una por vez** (para no quedarse sin capacidad), terminar cada
+instancia dejando que el grupo la reponga en la última versión del template:
+
+```bash
+aws autoscaling terminate-instance-in-auto-scaling-group \
+  --instance-id <id> --no-should-decrement-desired-capacity
+```
+
+Esperar a que la instancia nueva quede `healthy` en el target group antes de
+seguir con la siguiente:
+
+```bash
+aws elbv2 describe-target-health --target-group-arn "$(aws elbv2 describe-target-groups --names snowball-app-tg --query 'TargetGroups[0].TargetGroupArn' --output text)"
+```
+
+Lo mismo aplica a un cambio del user data. Las Lambdas **no** tienen este
+problema: `filebase64sha256` sobre el ZIP hace que el `apply` publique el
+código nuevo directamente.
+
 ## Cambios respecto de la segunda entrega
 
 ### Respuesta a la devolución
 
-**(a) Diagrama.** El diagrama de arquitectura se está rehaciendo en Lucid
-([enlace](https://lucid.app/lucidchart/fe523039-49a4-409d-9f44-310532b4100b/edit))
-siguiendo estos criterios (todavía no está actualizado).
+**(a) Diagrama.** El diagrama actualizado está en el repo, embebido más abajo y
+versionado en [`docs/architecture.svg`](docs/architecture.svg). El original
+editable sigue en Lucid
+([enlace](https://lucid.app/lucidchart/fe523039-49a4-409d-9f44-310532b4100b/edit)).
 
-*Criterios del diagrama actualizado:*
+*Criterios que cumple el diagrama actualizado:*
 
 - **Flechas reordenadas:** solo ortogonales, un color por flujo (el mismo de la
   leyenda) y sin cruces; los flujos de IoT y de las Lambdas van por un lado y
@@ -385,9 +471,14 @@ siguiendo estos criterios (todavía no está actualizado).
   SNS, la *error action* de IoT a CloudWatch, la alarma de flota «sin señal» y
   el bastión marcado como opcional.
 
-<!-- TODO: exportar el diagrama de Lucid a docs/architecture.png y embeberlo acá:
-![Arquitectura de Snowball](docs/architecture.png)
--->
+![Arquitectura de Snowball](docs/architecture.svg)
+
+El diagrama está en [`docs/architecture.svg`](docs/architecture.svg) y se generó a
+partir del código: **el color del borde de cada caja indica el módulo de Terraform
+que la crea** (la leyenda está arriba del propio diagrama), de modo que cada
+elemento se puede rastrear hasta su recurso. Las tres bandas son los tres flujos
+que no se tocan entre sí: la ingesta de las máquinas, el monitoreo agendado y el
+plano web. Siendo SVG, se versiona como texto y el diff muestra qué cambió.
 
 **(b) ¿Hacen falta dos bases de datos? No: una sola, DynamoDB.** La Entrega 2
 usaba RDS PostgreSQL para el dominio y DynamoDB para la telemetría. Con la
@@ -401,8 +492,9 @@ se resuelve con la clave primaria o con un GSI (`email-index` para el login,
 para las alertas de un cliente por fecha). No hay *joins*: el `client_id` se
 denormaliza en unidades y alertas, y el acknowledgement usa un update
 condicional (el primer supervisor gana). Las 7 tablas se crean con un único
-`for_each` en `modules/data`. Detalle de claves e índices en
-[`docs/dynamodb-model.md`](docs/dynamodb-model.md).
+`for_each` en `modules/data`. El detalle de claves, GSIs, proyecciones y TTL de
+las 7 tablas está en el mapa de definiciones que alimenta ese `for_each`:
+`terraform/modules/data/main.tf:3-9`.
 
 **(c) ¿Se puede reemplazar EC2 por Lambda? En parte: el procesador de alertas
 pasó a Lambda; la API sigue en EC2.**
@@ -462,9 +554,13 @@ idempotente de alertas (una carrera no duplica filas de alerta).
   Shadow respondían `503`).
 - Transición a Glacier a los **90 días** (antes 30), parametrizable con
   `archive_glacier_days`.
-- El ASG hace *instance refresh* automático (Rolling, 50 % sanas, 120 s de
-  warmup) cuando cambia el bundle de la API o el user data; el launch template
-  etiqueta instancias y volúmenes (`tag_specifications`).
+- Se **quitó el `instance_refresh`** del ASG: el SCP del Learner Lab deniega
+  `autoscaling:StartInstanceRefresh`, que el provider llama en cada cambio del
+  grupo, así que el bloque hacía terminar todo `apply` con `AccessDenied`
+  aunque el ASG se creara bien. El rollout de un bundle nuevo pasó a ser
+  manual: ver [Despliegue de un bundle nuevo](#despliegue-de-un-bundle-nuevo).
+  El launch template sigue etiquetando instancias y volúmenes
+  (`tag_specifications`).
 - Se eliminó `terraform/bootstrap/` (no creaba recursos y no podía hacerlo: el
   SCP del Lab deniega `GetBucketObjectLockConfiguration`); los buckets los crea
   `scripts/bootstrap-buckets.sh`.
@@ -493,8 +589,8 @@ idempotente de alertas (una carrera no duplica filas de alerta).
 - 5 tablas DynamoDB nuevas — `snowball-users`, `snowball-clients`,
   `snowball-units`, `snowball-alerts`, `snowball-device-config` — con GSIs para
   login por email, unidades por cliente y alertas por cliente y fecha
-  (`docs/dynamodb-model.md`), y datos demo cargados por Terraform desde
-  `scripts/seed-data.json`.
+  (definiciones en `terraform/modules/data/main.tf:3-9`), y datos demo cargados
+  por Terraform desde `scripts/seed-data.json`.
 - Capa de repositorios DynamoDB en la API (`packages/api/src/repositories/dynamodb.ts`)
   y en el alert-processor (`thresholds.ts`). El reconocimiento de alertas usa un
   update condicional (el primer supervisor gana).

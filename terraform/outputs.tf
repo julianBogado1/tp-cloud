@@ -1,14 +1,18 @@
 output "vpc_id" {
-  value = module.network.vpc_id
+  description = "VPC holding the public and application subnets."
+  value       = module.network.vpc_id
 }
 output "alb_dns_name" {
-  value = module.compute.alb_dns_name
+  description = "Public DNS name of the ALB: the base URL of the API (VITE_API_BASE for the dashboard build)."
+  value       = module.compute.alb_dns_name
 }
 output "artifact_bucket" {
-  value = local.bucket_names.artifacts
+  description = "Private bucket holding api.bundle.js, downloaded by the instances at boot."
+  value       = local.bucket_names.artifacts
 }
 output "dashboard_bucket" {
-  value = local.bucket_names.dashboard
+  description = "Bucket serving the dashboard static site."
+  value       = local.bucket_names.dashboard
 }
 output "dashboard_replica_bucket" {
   description = "Replicated dashboard bucket name; empty when the replica is disabled."
@@ -31,45 +35,57 @@ output "dashboard_replica_url" {
   value       = join("", [for w in aws_s3_bucket_website_configuration.dashboard_replica : "http://${w.website_endpoint}"])
 }
 output "archive_bucket" {
-  value = local.bucket_names.archive
+  description = "Bucket where the daily telemetry export lands before transitioning to Glacier."
+  value       = local.bucket_names.archive
 }
 output "iot_endpoint" {
-  value = module.iot_ingest.iot_endpoint
+  description = "IoT Core data endpoint (iot:Data-ATS) used by the simulator, the API and sync-shadows."
+  value       = module.iot_ingest.iot_endpoint
 }
 output "iot_certificates" {
-  value     = module.iot_ingest.certificates
-  sensitive = true
+  description = "Device certificate (PEM) per unit; written to disk by scripts/export-certs.sh."
+  value       = module.iot_ingest.certificates
+  sensitive   = true
 }
 output "iot_private_keys" {
-  value     = module.iot_ingest.private_keys
-  sensitive = true
+  description = "Device private key per unit."
+  value       = module.iot_ingest.private_keys
+  sensitive   = true
 }
 output "iot_certificate_arns" {
-  value     = module.iot_ingest.certificate_arns
-  sensitive = true
+  description = "Certificate ARN per unit (thing and policy attachment target)."
+  value       = module.iot_ingest.certificate_arns
+  sensitive   = true
 }
 output "table_names" {
-  value = module.data.table_names
+  description = "The 7 DynamoDB table names, keyed as in modules/data (telemetry, state, users, clients, units, alerts, config)."
+  value       = module.data.table_names
 }
 output "queue_url" {
-  value = module.messaging.queue_url
+  description = "URL of the readings queue the IoT rule publishes to."
+  value       = module.messaging.queue_url
 }
 output "dlq_url" {
-  value = module.messaging.dlq_url
+  description = "URL of the dead-letter queue (5 failed receives)."
+  value       = module.messaging.dlq_url
 }
 output "sns_topic_arns" {
   description = "SNS topics: thermal (alert-processor), signal (no-signal alarm), battery (reserved, no publisher yet)."
   value       = module.messaging.topic_arns
 }
 output "lambda_function_names" {
-  value = { for key, fn in module.lambda : key => fn.function_name }
+  description = "Function name per key of local.lambdas."
+  value       = { for key, fn in module.lambda : key => fn.function_name }
 }
 output "lambda_function_arns" {
-  value = { for key, fn in module.lambda : key => fn.arn }
+  description = "Function ARN per key of local.lambdas, as targeted by the schedules and the event source mapping."
+  value       = { for key, fn in module.lambda : key => fn.arn }
 }
 output "telemetry_export_schedule_arn" {
-  value = aws_scheduler_schedule.telemetry_export.arn
+  description = "EventBridge Scheduler schedule for the daily telemetry export."
+  value       = aws_scheduler_schedule.telemetry_export.arn
 }
 output "no_signal_schedule_arn" {
-  value = aws_scheduler_schedule.no_signal_monitor.arn
+  description = "EventBridge Scheduler schedule for the per-unit no-signal sweep."
+  value       = aws_scheduler_schedule.no_signal_monitor.arn
 }

@@ -136,7 +136,8 @@ Recursos que crea Terraform (resumen; el detalle por módulo está en la
 - **IoT Core:** policy de dispositivos, un *thing* + certificado por unidad y
   la regla `snowball_telemetry` (3 acciones + `error_action` a CloudWatch Logs).
 - **Cómputo:** ALB, target group, launch template y Auto Scaling Group (2–4
-  `t3.small` por defecto, en subredes privadas, con *instance refresh*). Las
+  `t3.small` por defecto, en subredes privadas, **sin `instance_refresh`**: el
+  SCP del Lab lo deniega, así que el rollout de un bundle nuevo es manual). Las
   instancias corren solo la API. Bastión opcional.
 - **Lambdas:** `snowball-alert-processor` (con *event source mapping* desde
   SQS), `snowball-telemetry-export` (con schedule diario en EventBridge
@@ -908,18 +909,34 @@ terraform -chdir=terraform apply
 
 `filemd5` detecta el bundle nuevo y Terraform lo vuelve a subir a S3. Como el
 hash también se renderiza (como comentario) en el user data, el launch template
-recibe una versión nueva y el ASG, que usa `latest_version`, lanza solo un
-**instance refresh** (Rolling, con al menos 50 % de instancias sanas y 120 s de
-warmup): las instancias se reemplazan de a una y las nuevas bajan el bundle
-nuevo. Lo mismo pasa si cambian las variables que entran en el user data
-(nombres de tablas, JWT, `cors_origin`).
+recibe una versión nueva, que el ASG usa (`latest_version`) para **las
+instancias que arranquen a partir de ese momento**. Lo mismo pasa si cambian las
+variables que entran en el user data (nombres de tablas, JWT, `cors_origin`).
 
-`apply` **no espera** a que termine el refresh. Seguilo en la consola (EC2 →
-Auto Scaling Groups → `snowball-app-asg` → *Instance refresh*) o con:
+Lo que **no** ocurre es el rollout automático: el ASG no tiene
+`instance_refresh` porque el SCP del Learner Lab deniega
+`autoscaling:StartInstanceRefresh` —el provider llama a esa acción en cada
+cambio del grupo, así que el bloque hacía terminar todo `apply` con
+`AccessDenied`—. Las instancias que ya están corriendo siguen con el bundle
+viejo hasta que se las reemplace a mano, **de a una por vez**:
 
 ```bash
-aws autoscaling describe-instance-refreshes --auto-scaling-group-name snowball-app-asg \
-  --query 'InstanceRefreshes[0].[Status,PercentageComplete]'
+aws autoscaling describe-auto-scaling-groups \
+  --auto-scaling-group-names snowball-app-asg \
+  --query 'AutoScalingGroups[0].Instances[].[InstanceId,LifecycleState]' --output text
+
+aws autoscaling terminate-instance-in-auto-scaling-group \
+  --instance-id <id> --no-should-decrement-desired-capacity
+```
+
+El grupo repone cada instancia con la última versión del template. Antes de
+terminar la siguiente, esperá que la nueva quede `healthy`:
+
+```bash
+aws elbv2 describe-target-health --target-group-arn \
+  "$(aws elbv2 describe-target-groups --names snowball-app-tg \
+     --query 'TargetGroups[0].TargetGroupArn' --output text)" \
+  --query 'TargetHealthDescriptions[].TargetHealth.State'
 ```
 
 y al terminar validá que el target group muestre 2 `healthy`, `/health` y el
@@ -1033,7 +1050,7 @@ terraform/
 | `data` | Las 7 tablas DynamoDB (definiciones en un mapa → `for_each`, GSIs/TTL en bloques `dynamic`) y los ítems de seed desde `scripts/seed-data.json` (las tres filas de `device-config` incluyen `signal_timeout_min`) | `table_names`, `seed_path` | `table_names`, `table_arns`, `table_ids` |
 | `messaging` | Cola `snowball-readings` (visibilidad 180 s, long polling 20 s) + DLQ (`maxReceiveCount = 5`, retención 14 días), tópicos SNS (térmico, sin señal, y batería —reservado, sin publicador—), suscripción por mail con `for_each` sobre los dos tópicos con publicador (térmico y sin señal) más un bloque `moved` desde el `count` anterior, alarma de flota «sin señal» | `names`, `subscription_email` | `queue_url`, `queue_arn`, `dlq_url`, `dlq_arn`, `thermal_topic_arn`, `no_signal_topic_arn`, `topic_arns`, `no_signal_alarm_arn` |
 | `iot-ingest` | Policy `snowball-device-policy` (acota cada dispositivo a sus tópicos con `${iot:Connection.Thing.ThingName}`), un thing + certificado + 2 attachments por unidad (`for_each`), regla `snowball_telemetry` (DynamoDB ×2, SQS, y `error_action` a CloudWatch Logs) | `names`, `units`, `lab_role_arn`, `telemetry_table_name`, `state_table_name` (de `module.data`), `queue_url` | `iot_endpoint`, `certificates`*, `private_keys`*, `certificate_arns`* |
-| `compute` | Subida del bundle de la API a S3, target group, ALB + listener HTTP:80, launch template (user data con `templatefile`, `tag_specifications`, `create_before_destroy`), ASG con `instance_refresh` y `latest_version`, bastión opcional (`count`) | subredes, security groups, bucket de artifacts, `api_bundle_path`, nombres de tablas, `iot_endpoint`, `cors_origin`, `jwt_secret`*, `asg_*`, `tags` | `alb_dns_name`, `target_group_arn`, `launch_template_id`, `bastion_instance_id` |
+| `compute` | Subida del bundle de la API a S3, target group, ALB + listener HTTP:80, launch template (user data con `templatefile`, `tag_specifications`, `create_before_destroy`), ASG con `latest_version` y **sin `instance_refresh`** (denegado por el SCP), bastión opcional (`count`) | subredes, security groups, bucket de artifacts, `api_bundle_path`, nombres de tablas, `iot_endpoint`, `cors_origin`, `jwt_secret`*, `asg_*`, `tags` | `alb_dns_name`, `target_group_arn`, `launch_template_id`, `bastion_instance_id` |
 | `lambda-function` | Una Lambda (ZIP, `LabRole`, fuera de la VPC) y su log group `/aws/lambda/<nombre>` (retención 14 días). La raíz lo instancia con `for_each` sobre `local.lambdas`: `telemetry-export` (timeout 300 s, 512 MB), `alert-processor` (timeout 30 s, 256 MB) y `no-signal-monitor` (timeout 60 s, 256 MB) | `function_name`, `zip_path`, `handler` (default `index.handler`), `runtime` (default `nodejs22.x`), `timeout`, `memory_size`, `environment`, `lab_role_arn`, `log_retention_days` | `function_name`, `arn`, `log_group_name` |
 
 \* sensibles.
@@ -1179,8 +1196,9 @@ defensa.
   duplica en `snowball-alerts`.
 - **Los buckets no los borra `terraform destroy`** (limitación del SCP, sección 5);
   para eso está `scripts/delete-buckets.sh`.
-- **El `apply` no espera al instance refresh** del ASG tras un cambio del bundle
-  de la API (sección 14): hay que seguirlo en la consola.
+- **El ASG no hace rollout automático** tras un cambio del bundle de la API: el
+  SCP deniega `autoscaling:StartInstanceRefresh`, así que las instancias en
+  marcha hay que reemplazarlas a mano (sección 14).
 - **El backend entero en una sola región** (`us-east-1`) y dos zonas de disponibilidad. Lo único
   fuera de `us-east-1` es el bucket réplica del **sitio estático** (`us-west-2`), que apunta al
   mismo ALB: no agrega disponibilidad del backend, y sin Route 53 ni CloudFront tampoco hay nombre
@@ -1296,8 +1314,8 @@ Normal hasta que llega la próxima lectura después del primer despliegue.
 **La configuración remota del setpoint o `GET /api/units/:id/shadow` responde `503`**
 La API no recibió `IOT_ENDPOINT` (el log de arranque dice `IOT_ENDPOINT not
 set`). Verificá que `/etc/snowball.env` lo incluya (lo escribe el user data) y
-que el *instance refresh* haya terminado después del último `apply`
-(sección 14).
+la instancia se haya creado **después** del último `apply` (si venía de antes,
+sigue con el user data viejo: reemplazala como indica la sección 14).
 
 **`terraform fmt -check` falla en el pipeline**
 Corré `terraform fmt -recursive` localmente y commiteá el resultado.
