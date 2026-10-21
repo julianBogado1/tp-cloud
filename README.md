@@ -76,7 +76,7 @@ caída del pipeline** (ninguna unidad llega). Las dos publican en
 | `packages/telemetry-export` | Lambda diaria: copia el histórico del día anterior de DynamoDB a S3 (`.ndjson.gz` por unidad) para el archivo en Glacier. También corre local (`npm run export`) | Lambda (EventBridge Scheduler) |
 | `packages/dashboard` | Frontend React (Vite): tarjetas por unidad y **mapa de unidades coloreado por estado** (Leaflet + tiles de OpenStreetMap), feed en vivo, historial y alertas. Compila a archivos 100 % estáticos | S3 static website, **replicado en una segunda región** |
 | `terraform/` | Toda la infraestructura como código (módulos propios, un módulo externo, backend S3) | — |
-| `scripts/` | `bootstrap-buckets.sh` (crea los buckets; `DASHBOARD_REPLICA_REGION` incluye el réplica del dashboard), `delete-buckets.sh` (los borra, con la misma variable), `export-certs.sh` (baja los certificados IoT), `seed-data.json` (datos demo de DynamoDB), `mqtt-probe.mjs` (diagnóstico de conexión MQTT) | local |
+| `scripts/` | `bootstrap-buckets.sh` (crea los buckets; `DASHBOARD_REPLICA_REGION` incluye el réplica del dashboard), `delete-buckets.sh` (los borra, con la misma variable), `export-certs.sh` (baja los certificados IoT), `seed-data.json` (datos demo de DynamoDB), `sync-shadows.ts` (completa el `desired` de cada Device Shadow desde `snowball-device-config`), `mqtt-probe.mjs` (diagnóstico de conexión MQTT) | local |
 | `.github/` | Pipeline de GitHub Actions (`workflows/terraform.yml`) y composite action de preparación | GitHub |
 | `infra/sql/` | SQL histórico de la Entrega 2, conservado solo como referencia; la ejecución actual usa `scripts/seed-data.json` | — |
 
@@ -123,12 +123,16 @@ aws s3 sync packages/dashboard/dist/ "s3://${BUCKET}/" --delete --region us-east
 terraform -chdir=terraform output -raw dashboard_url; echo
 terraform -chdir=terraform output -raw dashboard_replica_url; echo
 
-# 6. Certificados IoT y simulador
+# 6. Device Shadows: copia setpoint y umbrales de snowball-device-config al desired
+#    de cada unidad (idempotente; el pipeline lo corre solo después del apply)
+npx tsx scripts/sync-shadows.ts --endpoint "$(terraform -chdir=terraform output -raw iot_endpoint)"
+
+# 7. Certificados IoT y simulador
 bash scripts/export-certs.sh
 npm run simulator -- --endpoint "$(terraform -chdir=terraform output -raw iot_endpoint)" \
   --units SB-001,SB-002,SB-003 --interval 5 --excursion SB-001@60
 
-# 7. Al terminar la sesión
+# 8. Al terminar la sesión
 terraform -chdir=terraform destroy
 # Sin DASHBOARD_REPLICA_REGION el bucket replicado queda HUÉRFANO: Terraform no es su dueño
 # y, como los nombres de bucket son globales, el nombre queda tomado para la próxima sesión
@@ -563,6 +567,25 @@ el certificado), agregar sus entradas en `scripts/seed-data.json` (`units` y
   feed en vivo (`/live`) fija el conjunto de unidades permitidas al conectar el WebSocket,
   así que mover una unidad de cliente o desactivar al usuario no corta una conexión ya
   abierta hasta que se cierre.
+
+## Configuración remota
+
+El setpoint y los umbrales (`setpoint_c`, `temp_min_c`, `temp_max_c`,
+`tolerance_min`) se editan desde el dashboard (supervisor o admin) y viajan a la
+unidad por su Device Shadow:
+
+- `PUT /api/units/:id/config` escribe **primero** el `desired` del shadow (solo
+  los campos editados; el shadow conserva el resto) y **después**
+  `snowball-device-config`. Si el shadow falla responde `502` y no se guarda
+  nada, así la nube nunca evalúa umbrales que la unidad no recibió.
+- La unidad lee el `desired` completo al conectarse (`shadow/get`) y aplica los
+  `delta`, así que una orden enviada con la unidad desconectada se aplica al
+  reconectar. Reporta lo aplicado en `reported` y avisa con una alarma local si
+  la temperatura sale del rango recibido.
+- El dashboard muestra deseado vs. aplicado por campo y relee el shadow cada 3 s
+  mientras haya campos pendientes (hasta 2 min).
+- La Lambda de alertas sigue leyendo los umbrales de DynamoDB, con caché de 60 s:
+  los cambios rigen en la nube en menos de un minuto.
 
 ## Pendiente (fases siguientes)
 
