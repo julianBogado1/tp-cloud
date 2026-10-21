@@ -100,14 +100,12 @@ resource "aws_autoscaling_group" "app" {
     id      = aws_launch_template.app.id
     version = aws_launch_template.app.latest_version
   }
-  # apply does not wait for the refresh to finish; check it in the console.
-  instance_refresh {
-    strategy = "Rolling"
-    preferences {
-      min_healthy_percentage = 50
-      instance_warmup        = 120
-    }
-  }
+  # No `instance_refresh`: the Learner Lab SCP denies autoscaling:StartInstanceRefresh,
+  # which the provider calls on every change to this group, so the block made each
+  # apply end with AccessDenied even though the group itself was created fine.
+  # The cost is that a new launch template version does not roll out by itself:
+  # after changing the API bundle or the user data, replace the instances by hand
+  # (terminate them and let the group bring them back on the latest version).
 }
 resource "aws_instance" "bastion" {
   count                       = var.enable_bastion ? 1 : 0
