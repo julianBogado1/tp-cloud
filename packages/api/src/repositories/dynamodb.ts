@@ -119,7 +119,10 @@ async function acknowledgeAlert(alertId: number, userId: number, scope: Scope): 
   if (!existing || (!scope.all && Number(existing.client_id) !== scope.clientId)) return { status: 'not-found' };
   if (existing.acknowledged_at != null) return { status: 'already' };
   try {
-    const updated = await ddb.send(new UpdateCommand({ TableName: tables.alerts, Key: { id: alertId }, UpdateExpression: 'SET acknowledged_by = :user, acknowledged_at = :at', ConditionExpression: 'attribute_not_exists(acknowledged_at)', ExpressionAttributeValues: { ':user': userId, ':at': new Date().toISOString() }, ReturnValues: 'ALL_NEW' }));
+    // `insertAlert` writes acknowledged_at as an explicit NULL, and in DynamoDB a
+    // NULL-typed attribute EXISTS: attribute_not_exists() alone is false for every
+    // row the alert processor creates, so every ack used to fail as 'already'.
+    const updated = await ddb.send(new UpdateCommand({ TableName: tables.alerts, Key: { id: alertId }, UpdateExpression: 'SET acknowledged_by = :user, acknowledged_at = :at', ConditionExpression: 'attribute_not_exists(acknowledged_at) OR acknowledged_at = :unset', ExpressionAttributeValues: { ':user': userId, ':at': new Date().toISOString(), ':unset': null }, ReturnValues: 'ALL_NEW' }));
     return { status: 'ok', alert: mapAlert(updated.Attributes as Record<string, unknown>) };
   } catch (error) {
     if ((error as { name?: string }).name === 'ConditionalCheckFailedException') return { status: 'already' };

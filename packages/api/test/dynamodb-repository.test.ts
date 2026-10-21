@@ -60,4 +60,29 @@ describe('DynamoDB data repository', () => {
       { unit_id: 'SB-001', description: 'Reefer', active: true, setpoint_c: -18, temp_min_c: -25, temp_max_c: -15, tolerance_min: 5, signal_timeout_min: null },
     ]);
   });
+
+  /**
+   * The alert processor writes acknowledged_at as an explicit NULL, and DynamoDB
+   * treats a NULL-typed attribute as EXISTING. A bare attribute_not_exists() is
+   * therefore false for every real alert row, which made every ack come back as
+   * 'already acknowledged'. The mocked client never evaluates conditions, so the
+   * contract worth asserting here is the expression that goes out.
+   */
+  test('acknowledgeAlert accepts a row whose acknowledged_at is an explicit NULL', async () => {
+    send.mockResolvedValueOnce({ Item: { id: 1, client_id: 7, acknowledged_by: null, acknowledged_at: null } });
+    send.mockResolvedValueOnce({ Attributes: { id: 1, client_id: 7, unit_id: 'SB-001', severity: 'no-signal', emitted_at: '2026-10-21T01:38:04.731Z', acknowledged_by: 3, acknowledged_at: '2026-10-21T02:00:00.000Z' } });
+
+    const result = await dataAccess.acknowledgeAlert(1, 3, { all: true, clientId: null });
+    expect(result.status).toBe('ok');
+
+    const update = send.mock.calls[1][0].input;
+    expect(update.ConditionExpression).toBe('attribute_not_exists(acknowledged_at) OR acknowledged_at = :unset');
+    expect(update.ExpressionAttributeValues[':unset']).toBeNull();
+  });
+
+  test('acknowledgeAlert refuses a row that was already acknowledged', async () => {
+    send.mockResolvedValueOnce({ Item: { id: 1, client_id: 7, acknowledged_by: 3, acknowledged_at: '2026-10-21T02:00:00.000Z' } });
+    expect((await dataAccess.acknowledgeAlert(1, 4, { all: true, clientId: null })).status).toBe('already');
+    expect(send).toHaveBeenCalledTimes(1); // short-circuits before the update
+  });
 });
