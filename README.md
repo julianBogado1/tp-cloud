@@ -303,6 +303,48 @@ sobre el mismo state. Los permisos del token son `contents: read`, con
 4. Para destruir: `action: destroy` con `confirm: DESTROY`, y después
    `delete-buckets.sh` como en el paso 8 de la guía.
 
+### Correr el simulador después de un apply desde GitHub
+
+El simulador corre en tu máquina. Para conectarse necesita los certificados de
+IoT y el endpoint, que salen de los outputs de Terraform. El apply del pipeline
+guarda el state en el bucket de S3 (backend remoto), así que desde tu máquina
+alcanza con **leer ese state**. No hace falta crear buckets, completar
+`terraform.tfvars`, generar los bundles ni correr otro apply.
+
+Desde la raíz del repo, en Git Bash:
+
+```bash
+# 0. Credenciales del Lab de la sesión actual en ~/.aws/credentials
+#    (ver «0. Credenciales del Learner Lab»).
+aws sts get-caller-identity
+
+# 1. Dependencias (la primera vez, o si cambió package-lock.json).
+npm ci
+
+# 2. Conectar Terraform al state remoto. Los tres valores tienen que ser los
+#    mismos que usa el pipeline: el bucket es la variable STATE_BUCKET_NAME de GitHub.
+terraform -chdir=terraform init \
+  -backend-config="bucket=<STATE_BUCKET_NAME>" \
+  -backend-config="key=snowball/terraform.tfstate" \
+  -backend-config="region=us-east-1"
+
+# 3. Bajar los certificados a certs/ (los lee de los outputs del state).
+bash scripts/export-certs.sh
+
+# 4. Simulador.
+npm run simulator -- --endpoint "$(terraform -chdir=terraform output -raw iot_endpoint)" \
+  --units SB-001,SB-002,SB-003 --interval 5 --excursion SB-001@60
+```
+
+- **Desde tu máquina, solo `init`.** No corras `plan` ni `apply`: el pipeline
+  es el que despliega. El `init` no cambia nada en AWS, y `terraform output`
+  lee el state sin pedir variables ni bloquearlo, así que no choca con un
+  workflow que esté corriendo.
+- **Después de un destroy + apply, volvé a correr `export-certs.sh`.** Cada
+  apply nuevo crea certificados nuevos, así que los de `certs/` dejan de
+  servir. El script reemplaza los de cada unidad y conserva la CA raíz.
+- **`certs/` está en el `.gitignore`.** Las claves privadas nunca se suben.
+
 ### Por qué el apply es manual
 
 No hay trigger en `push`: las credenciales del Learner Lab vencen a las ~4 h, así
