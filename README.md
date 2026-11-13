@@ -10,7 +10,7 @@ funciones y meta-argumentos, guía de ejecución y pipeline de GitHub Actions.
 
 ## Arquitectura
 
-La arquitectura son tres flujos independientes sobre una VPC de dos zonas de
+La arquitectura son cuatro flujos independientes sobre una VPC de dos zonas de
 disponibilidad.
 
 1. **Ingesta.** El simulador publica por MQTT con certificado X.509 contra IoT
@@ -21,19 +21,27 @@ disponibilidad.
    cada minuto (detecta unidades en silencio) y `telemetry-export` una vez por
    día (vuelca el histórico a S3, con transición a Glacier).
 3. **Plano web.** El navegador baja el frontend estático de S3 y pega contra la
-   API, que corre en un Auto Scaling Group detrás de un ALB.
+   API, que corre en un Auto Scaling Group detrás de un ALB, con el *access
+   token* de Cognito en cada request.
+4. **Autenticación.** El login es con la Hosted UI de Cognito. Como Cognito
+   solo redirige a HTTPS y el dashboard es HTTP, vuelve a un HTTP API de API
+   Gateway (`snowball-auth`). Ahí la Lambda `snowball-auth-callback` canjea el
+   *code* por los tokens y redirige al dashboard con el token en la URL. La API
+   valida el token contra Cognito y saca el rol y el cliente de DynamoDB. El
+   detalle y los cambios al diagrama están en
+   [`docs/arquitectura-cognito.md`](docs/arquitectura-cognito.md).
 
 El color de cada flecha identifica el flujo: gris los datos de la aplicación,
 verde las reglas de IoT Core, naranja las invocaciones de Lambda, rosa las
-alertas, violeta punteado la salida a Internet por el NAT y magenta punteado la
-réplica del sitio estático.
+alertas, azul el login con Cognito, violeta punteado la salida a Internet por el
+NAT y magenta punteado la réplica del sitio estático.
 
 ![Arquitectura de Snowball](docs/Snowball%20Arquitectura.png)
 
 ## Módulos
 
 Un módulo es un directorio de configuración de Terraform que se invoca con un
-bloque `module` y se parametriza con variables. El repo tiene seis módulos
+bloque `module` y se parametriza con variables. El repo tiene siete módulos
 propios y uno externo del Registry.
 
 | Módulo | Qué crea |
@@ -43,15 +51,20 @@ propios y uno externo del Registry.
 | `messaging` | Cola `snowball-readings` (visibilidad 180 s) con DLQ a las 5 recepciones, tres tópicos SNS, suscripción por mail a los dos tópicos con publicador y la alarma de flota «sin señal» |
 | `iot-ingest` | Policy por dispositivo (cada thing solo accede a sus tópicos), thing y certificado por unidad, y la regla `snowball_telemetry` con tres acciones y `error_action` a CloudWatch Logs |
 | `compute` | Subida del bundle de la API a S3, target group, ALB, launch template con user data renderizado, Auto Scaling Group (2–4 `t3.small` en subredes privadas) y bastión opcional |
-| `lambda-function` | Lambda genérica (ZIP, `nodejs22.x`, `LabRole`, fuera de la VPC) con su log group. El root la instancia tres veces con `for_each` sobre `local.lambdas` |
+| `lambda-function` | Lambda genérica (ZIP, `nodejs22.x`, `LabRole`, fuera de la VPC) con su log group. El root la instancia tres veces con `for_each` sobre `local.lambdas`, y una cuarta (`module.auth_callback`) para el puente de login |
+| `cognito` | User pool `snowball-users` (alta solo por un admin, email como username), dominio de la Hosted UI, app client confidencial con flujo *authorization code* y las cuentas demo, una por usuario del seed (`for_each`) |
 
 `lambda-function` es el módulo reutilizable: una sola definición cubre
-`telemetry-export`, `alert-processor` y `no-signal-monitor`, que difieren solo en
-handler, ZIP, timeout y environment (`terraform/main.tf:207`).
+`telemetry-export`, `alert-processor`, `no-signal-monitor` y `auth-callback`, que
+difieren solo en handler, ZIP, timeout y environment (`terraform/main.tf:207`,
+`terraform/auth.tf:48`).
 
 El root (`terraform/main.tf`) no crea recursos de red ni de datos. Compone los
 módulos y administra lo que es transversal: las configuraciones de los buckets,
 los dos schedules de EventBridge y el event source mapping de SQS a Lambda.
+`terraform/auth.tf` compone el login: el módulo `cognito`, el HTTP API
+`snowball-auth` (rutas, stage con *throttling* y access logs) y la Lambda del
+puente con su permiso de invocación.
 
 ### Módulo externo
 
@@ -63,8 +76,8 @@ para la alarma que se dispara si la cola de lecturas no recibe mensajes durante
 
 ## Variables y outputs
 
-Las variables son la entrada del root module y los outputs su salida. Hay 29
-variables en `terraform/variables.tf` y 21 outputs en `terraform/outputs.tf`.
+Las variables son la entrada del root module y los outputs su salida. Hay 31
+variables en `terraform/variables.tf` y 25 outputs en `terraform/outputs.tf`.
 
 Cinco variables no tienen default y son obligatorias:
 
@@ -72,7 +85,7 @@ Cinco variables no tienen default y son obligatorias:
 |---|---|
 | `bucket_suffix` | Sufijo único global de los buckets; tiene que coincidir con el que se le pasa a `bootstrap-buckets.sh` |
 | `key_name` | Key pair de EC2 existente (en el Learner Lab, `vockey`) |
-| `jwt_secret` | Secreto de firma de los JWT de la API (`openssl rand -base64 32`); declarado `sensitive` |
+| `demo_user_password` | Contraseña de las cuentas demo de Cognito (≥ 8 caracteres, con minúscula y número); declarado `sensitive` |
 | `sns_subscription_email` | Mail de las alertas; la suscripción hay que confirmarla desde ese mail |
 | `bastion_allowed_cidr` | CIDR autorizado a SSH. Es obligatoria aun con `enable_bastion = false`: el security group se crea igual |
 
@@ -92,7 +105,7 @@ se pasa al `init` por `-backend-config`.
 ## Funciones
 
 Las funciones son expresiones integradas de HCL que transforman valores en
-tiempo de plan. Se usan 19 distintas. Archivo y línea relativos a `terraform/`.
+tiempo de plan. Se usan 23 distintas. Archivo y línea relativos a `terraform/`.
 
 | Función | Dónde | Para qué |
 |---|---|---|
@@ -112,6 +125,9 @@ tiempo de plan. Se usan 19 distintas. Archivo y línea relativos a `terraform/`.
 | `can` + `cidrhost` | `variables.tf:39` | Valida que `vpc_cidr` sea un CIDR IPv4 usable |
 | `can` + `regex` | `variables.tf:70` | Valida el formato del mail de SNS |
 | `contains` | `variables.tf:11` | Valida la región de la réplica contra la lista habilitada |
+| `replace` + `lower` | `auth.tf:17` | Arma un prefijo válido para el dominio de Cognito a partir de `bucket_suffix` |
+| `compact` + `concat` | `auth.tf:22` | Lista de orígenes a los que el puente puede devolver los tokens: dashboard, réplica (si existe) y localhost |
+| `file` + `jsondecode` + `for` | `auth.tf:19` | Saca del seed los emails de las cuentas demo de Cognito |
 
 `floor()` y `timestamp()` aparecen en `modules/iot-ingest/main.tf:62`, pero son
 SQL de IoT Core dentro de un string: no son funciones de Terraform.
@@ -155,10 +171,34 @@ Las convenciones que evitan la duplicación son cuatro.
 
 ## Ejecución paso a paso
 
+### 0. Credenciales del Learner Lab (cada sesión)
+
+Terraform, la AWS CLI y los scripts usan las credenciales **temporales** del
+Lab: access key, secret key y session token. Cambian en cada *Start Lab* y
+vencen a las pocas horas, así que este paso se repite en cada sesión.
+
+1. En AWS Academy abrí el curso → **Learner Lab** → **Start Lab**, y esperá a
+   que el círculo junto a «AWS» se ponga **verde**.
+2. Tocá **AWS Details** → junto a «AWS CLI» tocá **Show**. Aparece un bloque que
+   empieza con `[default]`.
+3. Copialo **entero** y pegalo como contenido del archivo de credenciales,
+   reemplazando lo que hubiera:
+   - Linux, Mac o Git Bash: `~/.aws/credentials`
+   - Windows: `C:\Users\<tu-usuario>\.aws\credentials` (sin extensión; si la
+     carpeta `.aws` no existe, creala)
+4. Verificá: `aws sts get-caller-identity` tiene que devolver un ARN con
+   `assumed-role/voclabs/...`. Si dice `ExpiredToken` o
+   `InvalidClientTokenId`, volvé al paso 2.
+
+Las credenciales nunca van en un archivo del repo. Para el pipeline de GitHub
+se cargan como secrets (ver [Cómo correrlo](#cómo-correrlo)). El detalle está
+en [`docs/infra-terraform.md`](docs/infra-terraform.md#3-credenciales-del-learner-lab).
+
+### 1 a 8. Despliegue
+
 El orden importa en dos puntos: los buckets existen antes del `init` (el backend
 es uno de ellos) y los artefactos existen antes del `plan` (`filemd5` y
-`filebase64sha256` fallan si el archivo no está). Con el Lab iniciado y las
-credenciales de **AWS Details → AWS CLI** en `~/.aws/credentials`:
+`filebase64sha256` fallan si el archivo no está).
 
 ```bash
 npm ci
@@ -168,9 +208,10 @@ npm ci
 DASHBOARD_REPLICA_REGION=us-west-2 bash scripts/bootstrap-buckets.sh <sufijo> <bucket-de-state>
 
 # 2. Variables. bucket_suffix tiene que coincidir con el <sufijo> del paso 1.
+#    demo_user_password es la contraseña con la que vas a entrar al dashboard (ver abajo).
 cp terraform/terraform.tfvars.example terraform/terraform.tfvars   # y completar las 5 obligatorias
 
-# 3. Artefactos: bundle de la API y ZIPs de las tres Lambdas.
+# 3. Artefactos: bundle de la API y ZIPs de las cuatro Lambdas.
 npm run bundle
 
 # 4. Terraform.
@@ -182,11 +223,17 @@ terraform -chdir=terraform validate
 terraform -chdir=terraform plan
 terraform -chdir=terraform apply
 
-# 5. Dashboard. Necesita el DNS del ALB, que existe solo después del apply.
+# 5. Dashboard. Necesita el DNS del ALB y los datos de Cognito, que existen solo
+#    después del apply: Vite los "hornea" en el build. Sin las tres VITE_COGNITO_*
+#    / VITE_AUTH_API el login muestra "Falta configurar Cognito en el build".
 ALB=$(terraform -chdir=terraform output -raw alb_dns_name)
 BUCKET=$(terraform -chdir=terraform output -raw dashboard_bucket)
 REPLICA=$(terraform -chdir=terraform output -raw dashboard_replica_bucket)
-VITE_API_BASE="http://${ALB}" npm run build -w @snowball/dashboard
+VITE_API_BASE="http://${ALB}" \
+VITE_COGNITO_DOMAIN="$(terraform -chdir=terraform output -raw cognito_domain_url)" \
+VITE_COGNITO_CLIENT_ID="$(terraform -chdir=terraform output -raw cognito_client_id)" \
+VITE_AUTH_API="$(terraform -chdir=terraform output -raw auth_api_url)" \
+  npm run build -w @snowball/dashboard
 aws s3 sync packages/dashboard/dist/ "s3://${BUCKET}/" --delete --region us-east-1
 [ -n "${REPLICA}" ] && aws s3 sync packages/dashboard/dist/ "s3://${REPLICA}/" --delete \
   --region "$(terraform -chdir=terraform output -raw dashboard_replica_region)"
@@ -205,6 +252,10 @@ npm run simulator -- --endpoint "$(terraform -chdir=terraform output -raw iot_en
 terraform -chdir=terraform destroy
 DASHBOARD_REPLICA_REGION=us-west-2 bash scripts/delete-buckets.sh <sufijo> <bucket-de-state>
 ```
+
+Para entrar al dashboard, tocá **Ingresar con Cognito** y usá una cuenta demo
+(`operator@snowball.example`, `supervisor@snowball.example` o
+`admin@snowball.example`) con la contraseña de `demo_user_password`.
 
 Dos cosas quedan fuera del `apply` y hay que hacerlas a mano: confirmar la
 suscripción de SNS desde el mail, y correr `delete-buckets.sh` **con**
@@ -243,7 +294,7 @@ sobre el mismo state. Los permisos del token son `contents: read`, con
 
 1. En **Settings → Secrets and variables → Actions** cargar los secrets
    `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` y
-   `JWT_SECRET`, y las variables `BUCKET_SUFFIX`, `STATE_BUCKET_NAME`,
+   `DEMO_USER_PASSWORD`, y las variables `BUCKET_SUFFIX`, `STATE_BUCKET_NAME`,
    `KEY_NAME`, `BASTION_ALLOWED_CIDR`, `SNS_SUBSCRIPTION_EMAIL`. Las tres
    credenciales vencen con la sesión del Lab y hay que volver a pegarlas.
 2. **Actions → Terraform → Run workflow**, elegir rama y `action: apply`.

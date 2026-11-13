@@ -1,15 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { createServer, type Server } from 'http';
 import express from 'express';
-import { signToken } from '../src/auth/jwt';
 import { authenticate } from '../src/auth/middleware';
 import { createRouter, notFound } from '../src/routes';
-import { fakeData, secret, strip, telemetry, units } from './fixtures';
+import { fakeData, resolveAuth, signToken, strip, telemetry, units } from './fixtures';
 
-const adminToken = signToken({ id: 3, email: 'adm@x', role: 'admin', client_id: null }, secret);
-const client1Token = signToken({ id: 1, email: 'op@x', role: 'operator', client_id: 1 }, secret);
-const client2Token = signToken({ id: 9, email: 'op2@x', role: 'operator', client_id: 2 }, secret);
-const supervisor1Token = signToken({ id: 2, email: 'sup@x', role: 'supervisor', client_id: 1 }, secret);
+const adminToken = signToken({ id: 3, email: 'adm@x', role: 'admin', client_id: null });
+const client1Token = signToken({ id: 1, email: 'op@x', role: 'operator', client_id: 1 });
+const client2Token = signToken({ id: 9, email: 'op2@x', role: 'operator', client_id: 2 });
+const supervisor1Token = signToken({ id: 2, email: 'sup@x', role: 'supervisor', client_id: 1 });
 
 let server: Server;
 let base: string;
@@ -17,7 +16,7 @@ const latestReadings = vi.fn(fakeData.latestReadings);
 
 beforeAll(async () => {
   const app = express();
-  app.use('/api', authenticate(secret));
+  app.use('/api', authenticate(resolveAuth));
   app.use('/api', createRouter({ ...fakeData, latestReadings }));
   app.use('/api', notFound());
   server = createServer(app);

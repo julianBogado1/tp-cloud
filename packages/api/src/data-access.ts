@@ -42,9 +42,8 @@ export interface UserRow {
   active: boolean;
 }
 
-export interface UserRecord extends UserRow {
-  password_hash: string;
-}
+/** A snowball-users row. Credentials live in Cognito, not here. */
+export type UserRecord = UserRow;
 
 export type AckResult = { status: 'ok'; alert: AlertRow } | { status: 'not-found' } | { status: 'already' };
 
@@ -58,7 +57,6 @@ export class DuplicateEmailError extends Error {
 
 export interface NewUser {
   email: string;
-  password_hash: string;
   role: Role;
   client_id: number | null;
 }

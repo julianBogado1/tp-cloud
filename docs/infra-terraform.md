@@ -61,7 +61,12 @@ EventBridge Scheduler (diario 00:15 UTC) ──▶ Lambda snowball-telemetry-exp
                                               (telemetry/aaaa/mm/dd/*.ndjson.gz ──▶ Glacier a los 90 d)
 
 LECTURA (humanos)
-dashboard (S3 snowball-dashboard) ──HTTP+JWT / WebSocket /live──▶ ALB ──▶ api (EC2, ASG) ──▶ DynamoDB + Device Shadow
+dashboard (S3 snowball-dashboard) ──HTTP+token Cognito / WebSocket /live──▶ ALB ──▶ api (EC2, ASG) ──▶ DynamoDB + Device Shadow
+
+LOGIN (humanos, ver «Autenticación con Cognito»)
+dashboard ──▶ Cognito Hosted UI ──▶ API Gateway snowball-auth GET /callback (HTTPS)
+                                      └─▶ Lambda snowball-auth-callback ──(code → tokens)──▶ Cognito
+                                            └─▶ 302 al dashboard con #access_token=…
 ```
 
 Dónde corre cada cosa respecto de la VPC:
@@ -116,6 +121,47 @@ el `client_id` se denormaliza en unidades y alertas. El modelo completo está en
   WebSocket API + tabla de conexiones + Lambda de *fan-out* por DynamoDB
   Streams) se evaluó y se descartó: es una reescritura sin ganancia funcional.
 
+### Autenticación con Cognito
+
+Los usuarios del dashboard se autentican contra un **user pool de Cognito**
+(`snowball-users`) con la **Hosted UI**. Cognito solo redirige a URLs HTTPS
+(salvo `http://localhost`), y el dashboard es un sitio de S3 en HTTP. Por eso
+hay un **puente HTTPS**, que es el workaround indicado por la cátedra
+(`terraform/auth.tf`):
+
+1. El dashboard guarda un *nonce* en `sessionStorage` y manda al usuario a la
+   Hosted UI. El `state` de OAuth lleva el nonce y el origen del dashboard.
+2. Después del login, Cognito redirige a `GET /callback` del HTTP API
+   `snowball-auth` (API Gateway, HTTPS fijo).
+3. La Lambda `snowball-auth-callback` canjea el *code* por los tokens en
+   `/oauth2/token`, con el **client secret** (solo lo tiene la Lambda; el
+   navegador nunca lo ve).
+4. La Lambda redirige al dashboard con `#access_token=…&id_token=…&state=…`.
+   Solo redirige a orígenes de una lista permitida (dashboard, réplica y
+   `auth_local_dev_origins`), para que nadie pueda armar un link que le mande
+   los tokens de otro a su sitio. El *refresh token* no se envía.
+5. El dashboard verifica que el nonce coincida, borra los tokens de la barra de
+   direcciones, llama a `GET /auth/me` y guarda la sesión.
+6. Cada llamada a la API (y el WebSocket `/live`) lleva el **access token**. La
+   API lo verifica contra el JWKS del user pool (`aws-jwt-verify`: firma,
+   vencimiento, `token_use = access` y `client_id`).
+
+**Cognito autentica; los permisos siguen en DynamoDB.** El username de Cognito
+es el email, y la API busca esa fila en `snowball-users` en cada request para
+obtener el rol, el `client_id` y si la cuenta está activa. Por eso desactivar a
+un usuario corta su acceso al instante, aunque su token siga vigente. Crear un
+usuario desde el panel de administración crea la cuenta de Cognito (con
+contraseña permanente) y la fila; desactivarlo también deshabilita la cuenta de
+Cognito.
+
+El logout manda a `/logout` de la Hosted UI, que vuelve por `GET /logout` del
+puente; la Lambda redirige al dashboard del que salió el usuario (lo recuerda
+en una cookie HTTPS del dominio de API Gateway).
+
+Las tres cuentas demo (`operator@`, `supervisor@` y `admin@snowball.example`)
+las crea Terraform (`aws_cognito_user`) con la contraseña de
+`demo_user_password`; sus roles están en `scripts/seed-data.json`.
+
 El razonamiento completo, y la limitación de concurrencia que queda, están en
 el `README.md` (sección *Cambios respecto de la segunda entrega*) y en las
 [limitaciones](#17-limitaciones-conocidas).
@@ -145,6 +191,10 @@ Recursos que crea Terraform (resumen; el detalle por módulo está en la
   EventBridge Scheduler), las tres del módulo genérico `lambda-function`.
 - **S3:** configuración de los buckets de dashboard, artifacts y archive, y
   subida del bundle de la API.
+- **Autenticación:** user pool de Cognito con su dominio (Hosted UI), app
+  client confidencial y las tres cuentas demo; HTTP API `snowball-auth` (rutas
+  `GET /callback` y `GET /logout`, *throttling* y access logs) y la Lambda
+  `snowball-auth-callback`.
 - **Cifrado (KMS):** una clave administrada por el cliente (`alias/snowball`,
   `terraform/kms.tf`, con rotación) que cifra las dos colas SQS, los tres
   tópicos SNS y todos los log groups de CloudWatch. Ver
@@ -312,7 +362,7 @@ Abrí `terraform/terraform.tfvars` y completá:
 | `key_name` | `vockey` | Key pair que trae el Lab |
 | `bastion_allowed_cidr` | Tu IP pública con `/32` | `curl ifconfig.me` → ej. `190.1.2.3/32`. **Es obligatoria aunque el bastión esté apagado** (se usa en una regla del security group) |
 | `sns_subscription_email` | Tu mail real | Te llega un correo de confirmación |
-| `jwt_secret` | Clave aleatoria larga (≥ 32 caracteres) | `openssl rand -base64 32` |
+| `demo_user_password` | Contraseña de las cuentas demo de Cognito: 8 caracteres o más, con una minúscula y un número | La elegís vos; es con la que vas a entrar al dashboard |
 
 Ejemplo completo:
 
@@ -321,7 +371,7 @@ region                 = "us-east-1"
 bucket_suffix          = "grupo-01"
 bastion_allowed_cidr   = "190.1.2.3/32"
 key_name               = "vockey"
-jwt_secret             = "<salida de openssl rand -base64 32>"
+demo_user_password     = "<contraseña de las cuentas demo>"
 sns_subscription_email = "tu-mail@itba.edu.ar"
 # cors_origin = "http://localhost:5173"   # por defecto "*"
 # enable_bastion = true        # descomentá para crear el bastión
@@ -426,7 +476,8 @@ Terraform carga `terraform/terraform.tfvars` automáticamente. Revisá el plan:
   el plan muestra las Lambdas y el schedule como **movidos** (`has moved to`),
   no como destruidos y recreados: lo resuelven los bloques `moved` de
   `main.tf`.
-- Los valores sensibles (`jwt_secret`, claves privadas) aparecen como
+- Los valores sensibles (`demo_user_password`, el client secret de Cognito,
+  claves privadas) aparecen como
   `(sensitive value)`.
 
 ---
@@ -471,16 +522,23 @@ confirmar no llega ninguna alerta. (Revisá spam.)
 
 ### 10.2 Compilar y publicar el dashboard
 
-Terraform no puede construir el dashboard antes de crear el ALB: la URL de la
-API (el DNS del ALB) se «hornea» dentro del build de Vite. Por eso es un paso
-posterior al `apply` (el pipeline lo hace solo):
+Terraform no puede construir el dashboard antes de crear el ALB y Cognito: la
+URL de la API (el DNS del ALB), el dominio de la Hosted UI, el client id y la URL
+del puente de login se «hornean» dentro del build de Vite. Por eso es un paso
+posterior al `apply` (el pipeline lo hace solo). Si falta alguna de las tres
+variables de Cognito, la pantalla de login muestra «Falta configurar Cognito en
+el build».
 
 ```bash
 ALB=$(terraform -chdir=terraform output -raw alb_dns_name)
 BUCKET=$(terraform -chdir=terraform output -raw dashboard_bucket)
 
 REPLICA=$(terraform -chdir=terraform output -raw dashboard_replica_bucket)
-VITE_API_BASE="http://${ALB}" npm run build -w @snowball/dashboard
+VITE_API_BASE="http://${ALB}" \
+VITE_COGNITO_DOMAIN="$(terraform -chdir=terraform output -raw cognito_domain_url)" \
+VITE_COGNITO_CLIENT_ID="$(terraform -chdir=terraform output -raw cognito_client_id)" \
+VITE_AUTH_API="$(terraform -chdir=terraform output -raw auth_api_url)" \
+  npm run build -w @snowball/dashboard
 aws s3 sync packages/dashboard/dist/ "s3://${BUCKET}/" --delete --region us-east-1
 # El mismo build va al bucket replicado (vacío si la réplica está apagada)
 [ -n "${REPLICA}" ] && aws s3 sync packages/dashboard/dist/ "s3://${REPLICA}/" --delete   --region "$(terraform -chdir=terraform output -raw dashboard_replica_region)"
@@ -615,35 +673,37 @@ Con el simulador corriendo, recorré el camino de los datos de punta a punta.
 
 **API**
 
-- [ ] Salud, login y token:
+- [ ] Salud y rechazo sin token:
   ```bash
   ALB=$(terraform -chdir=terraform output -raw alb_dns_name)
   curl "http://${ALB}/health"                            # {"ok":true}
-  curl -i -X POST "http://${ALB}/auth/login" \
-    -H 'Content-Type: application/json' \
-    -d '{"email":"admin@snowball.example","password":"admin123"}'   # 200 + JWT
-  curl -i "http://${ALB}/auth/me" -H "Authorization: Bearer <JWT>"   # datos del admin
-  curl -i "http://${ALB}/auth/me"                                    # 401 sin token
+  curl -i "http://${ALB}/auth/me"                        # 401 sin token
+  curl -i -X POST "http://${ALB}/auth/login"             # 404: el login es en Cognito
   ```
-- [ ] `GET /api/units` con el token devuelve las unidades con su última lectura:
+- [ ] Con el access token de una sesión del dashboard (DevTools → Application →
+  Session Storage → `snowball.session`, campo `token`):
   ```bash
-  curl -s "http://${ALB}/api/units" -H "Authorization: Bearer <JWT>"
+  curl -i "http://${ALB}/auth/me" -H "Authorization: Bearer <ACCESS_TOKEN>"   # datos del usuario
+  curl -s "http://${ALB}/api/units" -H "Authorization: Bearer <ACCESS_TOKEN>"
   ```
-  Usuarios demo (cargados desde `scripts/seed-data.json`):
+  Usuarios demo (cuentas de Cognito creadas por Terraform; el rol sale de
+  `scripts/seed-data.json`):
 
   | Email | Contraseña | Rol | Cliente |
   |---|---|---|---|
-  | `operator@snowball.example` | `operator123` | operator | 1 |
-  | `supervisor@snowball.example` | `supervisor123` | supervisor | 1 |
-  | `admin@snowball.example` | `admin123` | admin | — (ve todo) |
+  | `operator@snowball.example` | `demo_user_password` | operator | 1 |
+  | `supervisor@snowball.example` | `demo_user_password` | supervisor | 1 |
+  | `admin@snowball.example` | `demo_user_password` | admin | — (ve todo) |
 
   Un operador/supervisor del cliente 1 no ve la unidad `SB-003` (cliente 2):
   responde `404` para no revelar su existencia.
 
 **Dashboard**
 
-- [ ] Abrí la URL de `terraform -chdir=terraform output -raw dashboard_url`, iniciá
-  sesión y verificá que aparecen las tarjetas de las tres unidades actualizándose
+- [ ] Abrí la URL de `terraform -chdir=terraform output -raw dashboard_url` y
+  tocá **Ingresar con Cognito**: tiene que abrir la Hosted UI
+  (`*.auth.us-east-1.amazoncognito.com`), y después de loguearte con una cuenta
+  demo volver al dashboard sin tokens en la barra de direcciones. Verificá que aparecen las tarjetas de las tres unidades actualizándose
   en vivo (WebSocket), el historial y el **mapa** con un marcador por unidad
   coloreado según su estado.
 - [ ] Abrí la URL de `dashboard_replica_url` (la réplica de `us-west-2`) y repetí
@@ -869,7 +929,7 @@ job `deploy`, para activarla después de verificar el apply desde la rama.
 | `AWS_ACCESS_KEY_ID` | del bloque *AWS CLI* del Lab |
 | `AWS_SECRET_ACCESS_KEY` | del bloque *AWS CLI* del Lab |
 | `AWS_SESSION_TOKEN` | del bloque *AWS CLI* del Lab |
-| `JWT_SECRET` | la clave de firma (la misma lógica que `jwt_secret`) |
+| `DEMO_USER_PASSWORD` | la contraseña de las cuentas demo de Cognito (`demo_user_password`) |
 
 *Variables* (pestaña Variables):
 
@@ -944,7 +1004,7 @@ terraform -chdir=terraform apply
 hash también se renderiza (como comentario) en el user data, el launch template
 recibe una versión nueva, que el ASG usa (`latest_version`) para **las
 instancias que arranquen a partir de ese momento**. Lo mismo pasa si cambian las
-variables que entran en el user data (nombres de tablas, JWT, `cors_origin`).
+variables que entran en el user data (nombres de tablas, user pool de Cognito, `cors_origin`).
 
 Lo que **no** ocurre es el rollout automático: el ASG no tiene
 `instance_refresh` porque el SCP del Learner Lab deniega
@@ -1065,6 +1125,7 @@ terraform/
 ├── locals.tf            # tags comunes, nombres de recursos, buckets, unidades y mapa de Lambdas
 ├── main.tf              # módulos, configuración standalone de buckets, schedule, event source mapping, moved
 ├── kms.tf               # clave KMS del proyecto (SQS, SNS, log groups) y su alias
+├── auth.tf              # login: módulo cognito, HTTP API snowball-auth y Lambda del puente
 ├── outputs.tf           # salidas
 ├── terraform.tfvars.example
 └── modules/
@@ -1073,7 +1134,8 @@ terraform/
     ├── messaging/       # SQS + DLQ, SNS, suscripciones, alarma (módulo externo)
     ├── iot-ingest/      # IoT: policy, things, certificados, regla + error action
     ├── compute/         # bundle de la API, ALB, launch template, ASG, bastión
-    └── lambda-function/ # Lambda genérica + log group (instanciada 3 veces con for_each)
+    ├── cognito/         # user pool, dominio de la Hosted UI, app client y cuentas demo
+    └── lambda-function/ # Lambda genérica + log group (3 con for_each + la del puente de login)
 ```
 
 ### Módulos propios
@@ -1084,7 +1146,7 @@ terraform/
 | `data` | Las 7 tablas DynamoDB (definiciones en un mapa → `for_each`, GSIs/TTL en bloques `dynamic`) y los ítems de seed desde `scripts/seed-data.json` (las tres filas de `device-config` incluyen `signal_timeout_min`) | `table_names`, `seed_path` | `table_names`, `table_arns`, `table_ids` |
 | `messaging` | Cola `snowball-readings` (visibilidad 180 s, long polling 20 s) + DLQ (`maxReceiveCount = 5`, retención 14 días), tópicos SNS (térmico, sin señal, y batería —reservado, sin publicador—), suscripción por mail con `for_each` sobre los dos tópicos con publicador (térmico y sin señal) más un bloque `moved` desde el `count` anterior, alarma de flota «sin señal» | `names`, `subscription_email`, `kms_key_arn` | `queue_url`, `queue_arn`, `dlq_url`, `dlq_arn`, `thermal_topic_arn`, `no_signal_topic_arn`, `topic_arns`, `no_signal_alarm_arn` |
 | `iot-ingest` | Policy `snowball-device-policy` (acota cada dispositivo a sus tópicos con `${iot:Connection.Thing.ThingName}`), un thing + certificado + 2 attachments por unidad (`for_each`), regla `snowball_telemetry` (DynamoDB ×2, SQS, y `error_action` a CloudWatch Logs) | `names`, `units`, `lab_role_arn`, `telemetry_table_name`, `state_table_name` (de `module.data`), `queue_url`, `kms_key_arn` | `iot_endpoint`, `certificates`*, `private_keys`*, `certificate_arns`* |
-| `compute` | Subida del bundle de la API a S3, target group, ALB + listener HTTP:80, launch template (user data con `templatefile`, `tag_specifications`, `create_before_destroy`), ASG con `latest_version` y **sin `instance_refresh`** (denegado por el SCP), bastión opcional (`count`) | subredes, security groups, bucket de artifacts, `api_bundle_path`, nombres de tablas, `iot_endpoint`, `cors_origin`, `jwt_secret`*, `asg_*`, `tags` | `alb_dns_name`, `target_group_arn`, `launch_template_id`, `bastion_instance_id` |
+| `compute` | Subida del bundle de la API a S3, target group, ALB + listener HTTP:80, launch template (user data con `templatefile`, `tag_specifications`, `create_before_destroy`), ASG con `latest_version` y **sin `instance_refresh`** (denegado por el SCP), bastión opcional (`count`) | subredes, security groups, bucket de artifacts, `api_bundle_path`, nombres de tablas, `iot_endpoint`, `cors_origin`, `cognito_user_pool_id`, `cognito_client_id`, `asg_*`, `tags` | `alb_dns_name`, `target_group_arn`, `launch_template_id`, `bastion_instance_id` |
 | `lambda-function` | Una Lambda (ZIP, `LabRole`, fuera de la VPC) y su log group `/aws/lambda/<nombre>` (retención 14 días). La raíz lo instancia con `for_each` sobre `local.lambdas`: `telemetry-export` (timeout 300 s, 512 MB), `alert-processor` (timeout 30 s, 256 MB) y `no-signal-monitor` (timeout 60 s, 256 MB) | `function_name`, `zip_path`, `handler` (default `index.handler`), `runtime` (default `nodejs22.x`), `timeout`, `memory_size`, `environment`, `lab_role_arn`, `kms_key_arn`, `log_retention_days` | `function_name`, `arn`, `log_group_name` |
 
 \* sensibles.
@@ -1148,7 +1210,9 @@ están en el `README.md` (secciones *Funciones de Terraform utilizadas* y
 | `enable_bastion` | bool | `false` | Crea el bastión (`count`) |
 | `bastion_allowed_cidr` | string | **obligatoria** | CIDR autorizado a SSH al bastión |
 | `key_name` | string | **obligatoria** | Key pair existente (`vockey`) |
-| `jwt_secret` | string (sensible) | **obligatoria** | Clave de firma de los JWT |
+| `demo_user_password` | string (sensible) | **obligatoria** | Contraseña de las cuentas demo de Cognito; validada contra la política del user pool (≥ 8, minúscula y número) |
+| `auth_local_dev_origins` | list(string) | `["http://localhost:5173"]` | Orígenes extra a los que la Lambda del puente puede devolver los tokens (el servidor de Vite); `[]` apaga el login local |
+| `auth_callback_lambda_zip_path` | string | `../packages/auth-callback/dist/auth-callback.zip` | ZIP de la Lambda del puente de login |
 | `sns_subscription_email` | string | **obligatoria** | Mail que recibe las alertas; validado con `can(regex(...))` |
 | `cors_origin` | string | `*` | Origen permitido por CORS en la API (`CORS_ORIGIN`); `*` deja usar el dashboard desde localhost u otro origen |
 | `instance_type` | string | `t3.small` | Tipo de las instancias del ASG |
@@ -1202,16 +1266,20 @@ defensa.
 - **Un solo NAT Gateway (zonal).** Si cae `us-east-1a`, las instancias privadas
   pierden salida a Internet hasta que vuelva. Un segundo NAT en `us-east-1b`
   costaría unos USD 32/mes más.
-- **Secretos en el user data.** `JWT_SECRET` viaja en el user data del launch
-  template (visible para quien tenga acceso a EC2/metadata de la cuenta). En
-  producción iría en Secrets Manager o SSM Parameter Store, con roles propios
-  (no disponibles en el Lab).
+- **El client secret de Cognito está en las variables de entorno de la Lambda**
+  del puente (y en el state). En producción iría en Secrets Manager, con un rol
+  propio (no disponible en el Lab).
+- **Tokens en el fragmento de la URL.** Es lo que pide el workaround: el
+  fragmento no llega a ningún servidor (ni a S3 ni al ALB) y el dashboard lo
+  borra apenas lo lee, pero queda un instante en el historial del navegador. Sin
+  refresh token, la sesión dura lo que el access token (8 h).
 - **Claves privadas de los certificados IoT en el state.** `aws_iot_certificate`
   guarda la clave privada en el state remoto (que está en un bucket privado,
   cifrado y versionado). Aceptable para el Lab; en producción se aprovisionan
   claves por fuera o con CSR.
-- **JWT no revocable** hasta que expira (8 h), y el feed en vivo fija las unidades
-  permitidas al abrir el WebSocket (ver `README.md`).
+- **El feed en vivo fija las unidades permitidas al abrir el WebSocket** (ver
+  `README.md`). El resto de la API corta al instante a un usuario desactivado,
+  porque relee su fila de `snowball-users` en cada request.
 - **La detección de «sin señal» tiene dos niveles y una ventana de error de un
   minuto.** La Lambda `snowball-no-signal-monitor` detecta la unidad que se
   calló y la alarma de CloudWatch `snowball-no-signal-alarm` la caída del

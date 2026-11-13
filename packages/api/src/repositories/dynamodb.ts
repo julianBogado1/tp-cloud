@@ -52,13 +52,8 @@ const mapUser = (item: Record<string, unknown>): UserRecord => ({
   role: item.role as UserRecord['role'],
   client_id: item.client_id == null ? null : Number(item.client_id),
   active: Boolean(item.active),
-  password_hash: String(item.password_hash),
 });
-const publicUser = (item: Record<string, unknown>): UserRow => {
-  const user = mapUser({ ...item, password_hash: item.password_hash ?? '' });
-  const { password_hash: _passwordHash, ...result } = user;
-  return result;
-};
+const publicUser = (item: Record<string, unknown>): UserRow => mapUser(item);
 const mapAlert = (item: Record<string, unknown>): AlertRow => ({
   id: Number(item.id),
   unit_id: String(item.unit_id),

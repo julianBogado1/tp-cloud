@@ -1,9 +1,45 @@
-import type { Scope } from '../src/auth/scope';
+import type { Role } from '@snowball/shared';
+import type { ResolveAuth } from '../src/auth/cognito';
+import { assertClientInvariant } from '../src/auth/scope';
+import type { UserDirectory } from '../src/auth/user-directory';
 import { DuplicateEmailError, type DataAccess, type UserRecord } from '../src/data-access';
 
 /** In-memory DataAccess shared by the route tests. Later tasks add methods here. */
 
-export const secret = 's'.repeat(32);
+/**
+ * Stand-in for a Cognito access token in route tests: the caller's identity,
+ * base64url-encoded. resolveAuth below plays the part of
+ * createAuthResolver(cognitoVerifier, data); the real resolver is covered in
+ * test/auth/cognito.test.ts.
+ */
+export function signToken(user: { id: number; email: string; role: Role; client_id: number | null }): string {
+  return `test.${Buffer.from(JSON.stringify(user)).toString('base64url')}`;
+}
+
+export const resolveAuth: ResolveAuth = async (token) => {
+  if (!token.startsWith('test.')) throw new Error('not a test token');
+  const u = JSON.parse(Buffer.from(token.slice(5), 'base64url').toString('utf8')) as Parameters<typeof signToken>[0];
+  assertClientInvariant(u.role, u.client_id);
+  return { userId: u.id, email: u.email, role: u.role, clientId: u.client_id };
+};
+
+/** In-memory Cognito: email → { password, enabled }. */
+export function fakeDirectory(): UserDirectory & { accounts: Map<string, { password: string; enabled: boolean }> } {
+  const accounts = new Map<string, { password: string; enabled: boolean }>();
+  return {
+    accounts,
+    async create(email, password) {
+      accounts.set(email, { password, enabled: true });
+    },
+    async setEnabled(email, enabled) {
+      const account = accounts.get(email);
+      if (account) account.enabled = enabled;
+    },
+    async remove(email) {
+      accounts.delete(email);
+    },
+  };
+}
 
 // SB-001 carries its own signal timeout; SB-003 leaves it unset (null), the
 // case of a device-config row that predates the field.
@@ -29,10 +65,10 @@ export function inScope(u: { client_id: number }, scope: Scope): boolean {
 export const strip = ({ client_id: _c, ...rest }: (typeof units)[number]) => rest;
 
 export const userRecords: UserRecord[] = [
-  { id: 1, email: 'op@x', role: 'operator', client_id: 1, active: true, password_hash: 'h' },
-  { id: 3, email: 'adm@x', role: 'admin', client_id: null, active: true, password_hash: 'h' },
+  { id: 1, email: 'op@x', role: 'operator', client_id: 1, active: true },
+  { id: 3, email: 'adm@x', role: 'admin', client_id: null, active: true },
 ];
-const publicUser = ({ password_hash: _p, ...rest }: UserRecord) => rest;
+const publicUser = (u: UserRecord) => ({ ...u });
 
 export const fakeData: DataAccess = {
   listUnits: async (scope) => units.filter((u) => inScope(u, scope)).map(strip),

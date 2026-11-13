@@ -1,11 +1,16 @@
 import { Router } from 'express';
 import { isRole, type Role } from '@snowball/shared';
 import { getAuth, requireRole } from './auth/middleware';
-import { hashPassword } from './auth/password';
 import { assertClientInvariant } from './auth/scope';
+import { DirectoryError, type UserDirectory } from './auth/user-directory';
 import { DuplicateEmailError, type DataAccess, type UserPatch } from './data-access';
 
-/** Admin-only user management. index.ts mounts authenticate() on /api before this router. */
+/**
+ * Admin-only user management. index.ts mounts authenticate() on /api before
+ * this router. A user is a Cognito account (credentials, created here with a
+ * permanent password) plus a snowball-users row (role, client, active); both
+ * are kept in step, and the row is what the API trusts.
+ */
 
 const EMAIL = /^[^\s@]+@[^\s@]+$/;
 const MIN_PASSWORD = 8;
@@ -16,7 +21,7 @@ function parseClientId(value: unknown): number | null | string {
   return 'client_id must be a positive integer or null';
 }
 
-export function createUsersRouter(data: DataAccess): Router {
+export function createUsersRouter(data: DataAccess, directory: UserDirectory): Router {
   const router = Router();
   router.use('/users', requireRole('admin'));
 
@@ -51,15 +56,21 @@ export function createUsersRouter(data: DataAccess): Router {
         res.status(400).json({ error: 'unknown client_id' });
         return;
       }
-      const row = await data.createUser({
-        email,
-        password_hash: await hashPassword(body.password),
-        role: body.role,
-        client_id: clientId,
-      });
-      res.status(201).json(row);
+      if (await data.findUserByEmail(email)) { res.status(409).json({ error: 'email already registered' }); return; }
+      await directory.create(email, body.password);
+      try {
+        res.status(201).json(await data.createUser({ email, role: body.role, client_id: clientId }));
+      } catch (err) {
+        // The row is what grants access: without it, drop the Cognito account too.
+        await directory.remove(email).catch((e) => console.error(`POST /users: could not roll back Cognito user ${email}:`, e));
+        throw err;
+      }
     } catch (err) {
       if (err instanceof DuplicateEmailError) { res.status(409).json({ error: 'email already registered' }); return; }
+      if (err instanceof DirectoryError) {
+        res.status(err.kind === 'exists' ? 409 : 400).json({ error: err.kind === 'exists' ? 'email already registered' : `invalid password: ${err.message}` });
+        return;
+      }
       console.error('POST /users failed:', err);
       res.status(500).json({ error: 'internal error' });
     }
@@ -107,6 +118,13 @@ export function createUsersRouter(data: DataAccess): Router {
       }
       const row = await data.updateUser(id, patch);
       if (!row) { res.status(404).json({ error: 'not found' }); return; }
+      // The row already blocks a deactivated user on every request; disabling
+      // the Cognito account also stops them from logging in at all.
+      if (patch.active !== undefined && patch.active !== current.active) {
+        await directory.setEnabled(row.email, patch.active).catch((e) =>
+          console.error(`PATCH /users/${id}: Cognito user ${row.email} not ${patch.active ? 'enabled' : 'disabled'}:`, e),
+        );
+      }
       res.json(row);
     } catch (err) {
       console.error(`PATCH /users/${id} failed:`, err);

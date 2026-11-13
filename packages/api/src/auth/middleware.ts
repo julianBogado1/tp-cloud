@@ -1,6 +1,6 @@
 import type { RequestHandler, Response } from 'express';
 import { hasRole, type Role } from '@snowball/shared';
-import { verifyToken } from './jwt';
+import type { ResolveAuth } from './cognito';
 import type { AuthContext } from './scope';
 
 /**
@@ -8,7 +8,7 @@ import type { AuthContext } from './scope';
  * (typed access through getAuth) so route modules need no Request augmentation.
  */
 
-export function authenticate(secret: string): RequestHandler {
+export function authenticate(resolve: ResolveAuth): RequestHandler {
   return (req, res, next) => {
     const header = req.headers.authorization ?? '';
     const [scheme, token] = header.split(' ');
@@ -16,13 +16,15 @@ export function authenticate(secret: string): RequestHandler {
       res.status(401).json({ error: 'unauthorized' });
       return;
     }
-    try {
-      res.locals.auth = verifyToken(token, secret);
-    } catch {
-      res.status(401).json({ error: 'unauthorized' });
-      return;
-    }
-    next();
+    resolve(token).then(
+      (auth) => {
+        res.locals.auth = auth;
+        next();
+      },
+      () => {
+        res.status(401).json({ error: 'unauthorized' });
+      },
+    );
   };
 }
 
@@ -38,28 +40,6 @@ export function requireRole(min: Role): RequestHandler {
       res.status(403).json({ error: 'forbidden' });
       return;
     }
-    next();
-  };
-}
-
-/**
- * In-memory sliding window per IP. Enough for one API instance and a demo;
- * a real deployment would move this to the load balancer.
- */
-export function loginRateLimit(opts: { max: number; windowMs: number; now?: () => number }): RequestHandler {
-  const now = opts.now ?? Date.now;
-  const attempts = new Map<string, number[]>();
-  return (req, res, next) => {
-    const key = req.ip ?? 'unknown';
-    const t = now();
-    const recent = (attempts.get(key) ?? []).filter((ts) => t - ts < opts.windowMs);
-    if (recent.length >= opts.max) {
-      attempts.set(key, recent);
-      res.status(429).json({ error: 'too many attempts, retry later' });
-      return;
-    }
-    recent.push(t);
-    attempts.set(key, recent);
     next();
   };
 }

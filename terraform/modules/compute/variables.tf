@@ -56,10 +56,13 @@ variable "table_names" {
   type        = map(string)
   description = "DynamoDB table names rendered into the user data environment file."
 }
-variable "jwt_secret" {
+variable "cognito_user_pool_id" {
   type        = string
-  description = "Secret the API signs its JWTs with, rendered into the user data."
-  sensitive   = true
+  description = "User pool whose access tokens the API accepts (COGNITO_USER_POOL_ID)."
+}
+variable "cognito_client_id" {
+  type        = string
+  description = "App client the access tokens must have been issued to (COGNITO_CLIENT_ID)."
 }
 variable "cors_origin" {
   type        = string

@@ -58,10 +58,19 @@ variable "key_name" {
   type        = string
   description = "Existing EC2 key pair name."
 }
-variable "jwt_secret" {
+variable "demo_user_password" {
   type        = string
-  description = "Secret used by the API to sign JWTs."
+  description = "Permanent password of the Cognito demo accounts (operator, supervisor and admin @snowball.example)."
   sensitive   = true
+  validation {
+    condition     = length(var.demo_user_password) >= 8 && can(regex("[a-z]", var.demo_user_password)) && can(regex("[0-9]", var.demo_user_password))
+    error_message = "demo_user_password must have at least 8 characters, a lowercase letter and a digit (the user pool password policy)."
+  }
+}
+variable "auth_local_dev_origins" {
+  type        = list(string)
+  description = "Extra origins the auth-callback Lambda may redirect to with tokens, besides the dashboard and its replica: the Vite dev server. [] disables local login."
+  default     = ["http://localhost:5173"]
 }
 variable "sns_subscription_email" {
   type        = string
@@ -116,6 +125,11 @@ variable "no_signal_lambda_zip_path" {
   type        = string
   description = "Path to the no-signal-monitor Lambda zip (second bundle of the alert-processor package)."
   default     = "../packages/alert-processor/dist/no-signal-monitor.zip"
+}
+variable "auth_callback_lambda_zip_path" {
+  type        = string
+  description = "Path to the auth-callback Lambda zip (Cognito code exchange behind API Gateway)."
+  default     = "../packages/auth-callback/dist/auth-callback.zip"
 }
 variable "lambda_zip_path" {
   type        = string

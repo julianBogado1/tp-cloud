@@ -102,7 +102,6 @@
         "id": { "N": "1" },
         "email": { "S": "operator@snowball.example" },
         "email_lower": { "S": "operator@snowball.example" },
-        "password_hash": { "S": "$2b$10$Dmrj/MMAaLlkv1lhszJHM.19Dnl4zh4bUflz0ucOO0qdSVBhCEoWS" },
         "role": { "S": "operator" },
         "client_id": { "N": "1" },
         "active": { "BOOL": true }
@@ -114,7 +113,6 @@
         "id": { "N": "2" },
         "email": { "S": "supervisor@snowball.example" },
         "email_lower": { "S": "supervisor@snowball.example" },
-        "password_hash": { "S": "$2b$10$9/oEgoC0iL3QFKLxfuYN0uHlRpdj7GTY4ZUUSnyQbf.LLEodW2mFW" },
         "role": { "S": "supervisor" },
         "client_id": { "N": "1" },
         "active": { "BOOL": true }
@@ -126,7 +124,6 @@
         "id": { "N": "3" },
         "email": { "S": "admin@snowball.example" },
         "email_lower": { "S": "admin@snowball.example" },
-        "password_hash": { "S": "$2b$10$sLxBcv1cR/gMGCxUWIVGUeabhS1zURIPm0dec0NUZ/Ljjnq9rbC3y" },
         "role": { "S": "admin" },
         "client_id": { "NULL": true },
         "active": { "BOOL": true }

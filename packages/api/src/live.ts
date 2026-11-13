@@ -91,8 +91,8 @@ export interface LiveConnectionSocket extends LiveSocket {
 }
 
 export interface LiveConnectionDeps {
-  /** Verifies the token from the query string; throws on any problem. */
-  verify: (token: string) => AuthContext;
+  /** Resolves the token from the query string; throws or rejects on any problem. */
+  verify: (token: string) => AuthContext | Promise<AuthContext>;
   /** Resolves the caller's allowed unit ids (already scope-checked). */
   listUnitIds: (auth: AuthContext) => Promise<string[]>;
   feed: Pick<LiveFeed, 'subscribe' | 'unsubscribe'>;
@@ -108,40 +108,41 @@ export interface LiveConnectionDeps {
 export function createLiveConnectionHandler(deps: LiveConnectionDeps) {
   return function handleLiveConnection(socket: LiveConnectionSocket, req: { url?: string }): void {
     const token = new URL(req.url ?? '/', 'http://localhost').searchParams.get('token');
-    let auth: AuthContext;
-    try {
-      auth = deps.verify(token ?? '');
-    } catch {
-      socket.close(4401, 'unauthorized');
-      return;
-    }
-
-    deps
-      .listUnitIds(auth)
-      .then((ids) => {
-        const allowed: ReadonlySet<string> = new Set(ids);
-        socket.on('message', (raw) => {
-          let msg: unknown;
-          try {
-            msg = JSON.parse(raw.toString());
-          } catch {
-            socket.send(JSON.stringify({ type: 'error', error: 'invalid JSON' }));
-            return;
-          }
-          const units = (msg as { subscribe?: unknown }).subscribe;
-          if (Array.isArray(units) && units.every((u) => typeof u === 'string')) {
-            const accepted = deps.feed.subscribe(socket, units, allowed);
-            socket.send(JSON.stringify({ type: 'subscribed', units: accepted }));
-          } else {
-            socket.send(JSON.stringify({ type: 'error', error: 'expected { subscribe: string[] }' }));
-          }
-        });
-        socket.send(JSON.stringify({ type: 'ready' }));
-      })
-      .catch((err) => {
-        console.error('[live] could not resolve allowed units:', err);
-        socket.close(1011, 'internal error');
-      });
+    // Verification is async (Cognito JWKS + the snowball-users lookup). The
+    // client waits for { type: 'ready' } before subscribing, so nothing it
+    // sends is lost while this resolves.
+    Promise.resolve()
+      .then(() => deps.verify(token ?? ''))
+      .then(
+        (auth) =>
+          deps
+            .listUnitIds(auth)
+            .then((ids) => {
+              const allowed: ReadonlySet<string> = new Set(ids);
+              socket.on('message', (raw) => {
+                let msg: unknown;
+                try {
+                  msg = JSON.parse(raw.toString());
+                } catch {
+                  socket.send(JSON.stringify({ type: 'error', error: 'invalid JSON' }));
+                  return;
+                }
+                const units = (msg as { subscribe?: unknown }).subscribe;
+                if (Array.isArray(units) && units.every((u) => typeof u === 'string')) {
+                  const accepted = deps.feed.subscribe(socket, units, allowed);
+                  socket.send(JSON.stringify({ type: 'subscribed', units: accepted }));
+                } else {
+                  socket.send(JSON.stringify({ type: 'error', error: 'expected { subscribe: string[] }' }));
+                }
+              });
+              socket.send(JSON.stringify({ type: 'ready' }));
+            })
+            .catch((err) => {
+              console.error('[live] could not resolve allowed units:', err);
+              socket.close(1011, 'internal error');
+            }),
+        () => socket.close(4401, 'unauthorized'),
+      );
 
     socket.on('close', () => deps.feed.unsubscribe(socket));
     socket.on('error', () => deps.feed.unsubscribe(socket));

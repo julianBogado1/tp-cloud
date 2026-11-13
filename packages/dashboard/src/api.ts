@@ -1,12 +1,13 @@
 import type { DeviceConfig, DeviceShadowState, IngestedReading, ThresholdConfig } from '@snowball/shared';
-import { clearSession, getSession, type Role, type Session, type SessionUser } from './auth';
+import { clearSession, getSession, type Role, type SessionUser } from './auth';
 import { deriveWsUrl } from './status';
 
 /**
  * HTTP + WebSocket client against @snowball/api. The base URL is baked in at
  * build time (VITE_API_BASE); with no value the bundle assumes same-origin.
- * Every /api call carries the session token; a 401 (or a 4401 WebSocket
- * close) clears the session and notifies App through setUnauthorizedHandler.
+ * Every /api call carries the session's Cognito access token; a 401 (or a
+ * 4401 WebSocket close) clears the session and notifies App through
+ * setUnauthorizedHandler.
  */
 
 export const API_BASE: string = import.meta.env.VITE_API_BASE ?? window.location.origin;
@@ -72,7 +73,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (res.status === 401 && path !== '/auth/login') {
+  if (res.status === 401) {
     clearSession();
     onUnauthorized();
   }
@@ -88,8 +89,16 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return res.json() as Promise<T>;
 }
 
-export function login(email: string, password: string): Promise<Session> {
-  return request<{ token: string; user: SessionUser }>('POST', '/auth/login', { email, password });
+/**
+ * Who the fresh Cognito access token belongs to in Snowball: role and client
+ * scope come from snowball-users. Called once, right after the login redirect
+ * and before there is a session, so it carries the token itself.
+ */
+export async function fetchMe(accessToken: string): Promise<SessionUser> {
+  const res = await fetch(`${API_BASE}/auth/me`, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!res.ok) throw new ApiError(res.status, `GET /auth/me: ${res.status}`);
+  const me = (await res.json()) as { userId: number; email: string; role: Role; clientId: number | null };
+  return { id: me.userId, email: me.email, role: me.role, client_id: me.clientId };
 }
 
 export const fetchUnits = () => request<UnitWithReading[]>('GET', '/api/units');

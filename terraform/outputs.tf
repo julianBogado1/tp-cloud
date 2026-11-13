@@ -89,3 +89,19 @@ output "no_signal_schedule_arn" {
   description = "EventBridge Scheduler schedule for the per-unit no-signal sweep."
   value       = aws_scheduler_schedule.no_signal_monitor.arn
 }
+output "cognito_user_pool_id" {
+  description = "User pool of the dashboard users (COGNITO_USER_POOL_ID for the API)."
+  value       = module.cognito.user_pool_id
+}
+output "cognito_client_id" {
+  description = "Dashboard app client id (VITE_COGNITO_CLIENT_ID, COGNITO_CLIENT_ID)."
+  value       = module.cognito.client_id
+}
+output "cognito_domain_url" {
+  description = "Hosted UI base URL (VITE_COGNITO_DOMAIN)."
+  value       = module.cognito.domain_url
+}
+output "auth_api_url" {
+  description = "HTTPS bridge for the login redirect (VITE_AUTH_API): /callback and /logout."
+  value       = aws_apigatewayv2_api.auth.api_endpoint
+}

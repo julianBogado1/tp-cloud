@@ -193,7 +193,8 @@ module "compute" {
   vpc_id                    = module.network.vpc_id
   artifact_bucket           = local.bucket_names.artifacts
   api_bundle_path           = var.api_bundle_path
-  jwt_secret                = var.jwt_secret
+  cognito_user_pool_id      = module.cognito.user_pool_id
+  cognito_client_id         = module.cognito.client_id
   cors_origin               = var.cors_origin
   table_names               = module.data.table_names
   iot_endpoint              = module.iot_ingest.iot_endpoint

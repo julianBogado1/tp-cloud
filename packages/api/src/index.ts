@@ -3,10 +3,11 @@ import cors from 'cors';
 import express, { type ErrorRequestHandler } from 'express';
 import { WebSocketServer } from 'ws';
 import { envAsNumber } from '@snowball/shared';
-import { loadJwtSecret, verifyToken } from './auth/jwt';
+import { createAuthResolver, createCognitoVerifier, loadCognitoConfig } from './auth/cognito';
 import { authenticate } from './auth/middleware';
 import { createAuthRouter } from './auth/routes';
 import { scopeOf } from './auth/scope';
+import { createCognitoDirectory } from './auth/user-directory';
 import { createConfigRouter } from './config-routes';
 import { closePool, dataAccess, queryNewReadings } from './data';
 import { createLiveConnectionHandler, createLiveFeed } from './live';
@@ -17,11 +18,12 @@ import { createUsersRouter } from './users-routes';
 /**
  * Snowball API: REST + WebSocket for the static dashboard. Stateless —
  * everything served comes from DynamoDB; the live feed's lastSeen map is
- * a disposable cursor and the login rate limiter is per instance.
+ * a disposable cursor. People log in with Cognito (Hosted UI); every request
+ * carries the Cognito access token, resolved to a snowball-users row.
  *
  * Environment variables: see .env.example.
  *
- * WebSocket protocol (path /live?token=<jwt>):
+ * WebSocket protocol (path /live?token=<Cognito access token>):
  *   token invalid            → server closes with 4401
  *   client sends { "subscribe": ["SB-001", "SB-002"] }  (replaces previous set,
  *                                                       filtered to the caller's units)
@@ -31,12 +33,15 @@ import { createUsersRouter } from './users-routes';
 
 const PORT = envAsNumber('PORT', 3000);
 const LIVE_POLL_MS = envAsNumber('LIVE_POLL_MS', 3000);
-const JWT_SECRET = loadJwtSecret();
+const COGNITO = loadCognitoConfig();
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? '*';
 const IOT_ENDPOINT = process.env.IOT_ENDPOINT;
 
 const shadow = IOT_ENDPOINT ? createIotShadowClient(IOT_ENDPOINT) : undefined;
 if (!shadow) console.warn('IOT_ENDPOINT not set: shadow routes will answer 503');
+
+const resolveAuth = createAuthResolver(createCognitoVerifier(COGNITO), dataAccess);
+const directory = createCognitoDirectory(COGNITO.userPoolId);
 
 const app = express();
 app.use(
@@ -51,12 +56,12 @@ app.use(express.json());
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
 });
-app.use('/auth', createAuthRouter(dataAccess, JWT_SECRET));
+app.use('/auth', createAuthRouter(resolveAuth));
 // One authenticate() for every /api router; the routers themselves only do role/scope checks.
-app.use('/api', authenticate(JWT_SECRET));
+app.use('/api', authenticate(resolveAuth));
 app.use('/api', createRouter(dataAccess));
 app.use('/api', createConfigRouter(dataAccess, shadow));
-app.use('/api', createUsersRouter(dataAccess));
+app.use('/api', createUsersRouter(dataAccess, directory));
 app.use('/api', notFound());
 
 // Catch-all for anything outside /api (e.g. GET /), so the whole API answers
@@ -80,7 +85,7 @@ const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
   if (status >= 500) {
     // Only 5xx gets the full error logged: a 4xx body-parse SyntaxError's
     // message embeds a snippet of the raw request body (e.g. a malformed
-    // POST /auth/login could leak a password fragment into the logs).
+    // POST /api/users could leak a password fragment into the logs).
     console.error('[api] unhandled request error:', err);
   } else {
     console.error(`[api] request error ${status} on ${req.method} ${req.path}`);
@@ -94,7 +99,7 @@ const wss = new WebSocketServer({ server, path: '/live' });
 const feed = createLiveFeed(queryNewReadings);
 
 const handleLiveConnection = createLiveConnectionHandler({
-  verify: (token) => verifyToken(token, JWT_SECRET),
+  verify: resolveAuth,
   listUnitIds: (auth) => dataAccess.listUnitIds(scopeOf(auth)),
   feed,
 });
