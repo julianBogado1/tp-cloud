@@ -16,6 +16,7 @@ module "messaging" {
   source             = "./modules/messaging"
   names              = local.names
   subscription_email = var.sns_subscription_email
+  kms_key_arn        = aws_kms_key.main.arn
 }
 
 resource "aws_s3_bucket_versioning" "artifacts" {
@@ -171,6 +172,7 @@ module "iot_ingest" {
   telemetry_table_name = module.data.table_names.telemetry
   state_table_name     = module.data.table_names.state
   queue_url            = module.messaging.queue_url
+  kms_key_arn          = aws_kms_key.main.arn
 }
 
 # No module-level depends_on here: it would defer data.aws_ami / data.aws_region
@@ -214,6 +216,7 @@ module "lambda" {
   memory_size   = each.value.memory_size
   environment   = each.value.environment
   lab_role_arn  = data.aws_iam_role.lab.arn
+  kms_key_arn   = aws_kms_key.main.arn
 }
 
 resource "aws_scheduler_schedule" "telemetry_export" {

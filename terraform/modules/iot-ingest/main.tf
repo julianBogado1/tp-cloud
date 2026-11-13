@@ -55,6 +55,7 @@ resource "aws_iot_policy_attachment" "this" {
 resource "aws_cloudwatch_log_group" "errors" {
   name              = "/aws/iot/snowball-iot-errors"
   retention_in_days = 14
+  kms_key_id        = var.kms_key_arn
 }
 resource "aws_iot_topic_rule" "telemetry" {
   name        = var.names.iot_rule

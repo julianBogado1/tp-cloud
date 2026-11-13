@@ -145,6 +145,10 @@ Recursos que crea Terraform (resumen; el detalle por módulo está en la
   EventBridge Scheduler), las tres del módulo genérico `lambda-function`.
 - **S3:** configuración de los buckets de dashboard, artifacts y archive, y
   subida del bundle de la API.
+- **Cifrado (KMS):** una clave administrada por el cliente (`alias/snowball`,
+  `terraform/kms.tf`, con rotación) que cifra las dos colas SQS, los tres
+  tópicos SNS y todos los log groups de CloudWatch. Ver
+  [chequeo de seguridad](#chequeo-de-seguridad-tfsec).
 
 **Lo que NO crea Terraform:** los cinco buckets en sí (state, dashboard, la
 réplica del dashboard, artifacts, archive). Los crea un script de AWS CLI, por una restricción del
@@ -801,6 +805,35 @@ API y ZIPs de las tres Lambdas) → instalar Terraform → **crear los buckets**
 → `terraform init` con el backend remoto. El workflow define `concurrency`
 para que nunca corran dos ejecuciones a la vez sobre el mismo state.
 
+### Chequeo de seguridad (tfsec)
+
+Además de `terraform.yml`, en cada PR corre `.github/workflows/tfsec.yaml`
+(provisto por la cátedra): analiza `terraform/` con
+[tfsec](https://github.com/aquasecurity/tfsec), sube el reporte SARIF y comenta
+los hallazgos en el PR. Para que pase se hicieron dos cambios:
+
+1. **Ruta del análisis.** El workflow de la plantilla apuntaba a
+   `terraform/organization`, que no existe en este repo; ahora apunta a
+   `terraform`.
+2. **Hallazgos corregidos en el código:**
+   - Clave KMS propia (`terraform/kms.tf`) para SQS, SNS y CloudWatch Logs. Es
+     una CMK y no `alias/aws/sns` porque la alarma de «sin señal» publica en su
+     tópico como `cloudwatch.amazonaws.com`, y ese principal no puede usar las
+     claves administradas por AWS. Los permisos van en la *key policy* (cuenta,
+     `LabRole`, CloudWatch alarms y CloudWatch Logs), así que no hace falta
+     tocar IAM.
+   - IMDSv2 obligatorio en el launch template y en el bastión.
+   - ALB con `drop_invalid_header_fields = true`.
+   - X-Ray (`tracing_config { mode = "Active" }`) en las Lambdas.
+   - `map_public_ip_on_launch = false` en todas las subredes: NAT, bastión y
+     ALB ya traen su propia IP pública.
+   - `description` en todas las reglas de security group.
+3. **Excepciones justificadas** (`#tfsec:ignore:...` con el motivo comentado
+   al lado del recurso): ALB público y listener HTTP (no hay dominio ni
+   certificado ACM en el Lab), ingreso `0.0.0.0/0` al ALB, egreso HTTPS de las
+   instancias a las APIs de AWS, y VPC sin flow logs (ver
+   [limitaciones](#17-limitaciones-conocidas)).
+
 ### Comportamiento según la situación
 
 | Situación | `plan` del PR | `deploy` manual |
@@ -1031,6 +1064,7 @@ terraform/
 ├── variables.tf         # entradas parametrizables
 ├── locals.tf            # tags comunes, nombres de recursos, buckets, unidades y mapa de Lambdas
 ├── main.tf              # módulos, configuración standalone de buckets, schedule, event source mapping, moved
+├── kms.tf               # clave KMS del proyecto (SQS, SNS, log groups) y su alias
 ├── outputs.tf           # salidas
 ├── terraform.tfvars.example
 └── modules/
@@ -1048,10 +1082,10 @@ terraform/
 |---|---|---|---|
 | `network` | VPC, 4 subredes (2 públicas, 2 de aplicación) con `cidrsubnet`, IGW, EIP + NAT, tablas de ruteo, gateway endpoints S3/DynamoDB, security groups `sg-alb`/`sg-app`/`sg-bastion` encadenados por referencia | `vpc_cidr`, `availability_zones`, `bastion_allowed_cidr` | `vpc_id`, `public_subnet_ids`, `app_subnet_ids`, `*_security_group_id` |
 | `data` | Las 7 tablas DynamoDB (definiciones en un mapa → `for_each`, GSIs/TTL en bloques `dynamic`) y los ítems de seed desde `scripts/seed-data.json` (las tres filas de `device-config` incluyen `signal_timeout_min`) | `table_names`, `seed_path` | `table_names`, `table_arns`, `table_ids` |
-| `messaging` | Cola `snowball-readings` (visibilidad 180 s, long polling 20 s) + DLQ (`maxReceiveCount = 5`, retención 14 días), tópicos SNS (térmico, sin señal, y batería —reservado, sin publicador—), suscripción por mail con `for_each` sobre los dos tópicos con publicador (térmico y sin señal) más un bloque `moved` desde el `count` anterior, alarma de flota «sin señal» | `names`, `subscription_email` | `queue_url`, `queue_arn`, `dlq_url`, `dlq_arn`, `thermal_topic_arn`, `no_signal_topic_arn`, `topic_arns`, `no_signal_alarm_arn` |
-| `iot-ingest` | Policy `snowball-device-policy` (acota cada dispositivo a sus tópicos con `${iot:Connection.Thing.ThingName}`), un thing + certificado + 2 attachments por unidad (`for_each`), regla `snowball_telemetry` (DynamoDB ×2, SQS, y `error_action` a CloudWatch Logs) | `names`, `units`, `lab_role_arn`, `telemetry_table_name`, `state_table_name` (de `module.data`), `queue_url` | `iot_endpoint`, `certificates`*, `private_keys`*, `certificate_arns`* |
+| `messaging` | Cola `snowball-readings` (visibilidad 180 s, long polling 20 s) + DLQ (`maxReceiveCount = 5`, retención 14 días), tópicos SNS (térmico, sin señal, y batería —reservado, sin publicador—), suscripción por mail con `for_each` sobre los dos tópicos con publicador (térmico y sin señal) más un bloque `moved` desde el `count` anterior, alarma de flota «sin señal» | `names`, `subscription_email`, `kms_key_arn` | `queue_url`, `queue_arn`, `dlq_url`, `dlq_arn`, `thermal_topic_arn`, `no_signal_topic_arn`, `topic_arns`, `no_signal_alarm_arn` |
+| `iot-ingest` | Policy `snowball-device-policy` (acota cada dispositivo a sus tópicos con `${iot:Connection.Thing.ThingName}`), un thing + certificado + 2 attachments por unidad (`for_each`), regla `snowball_telemetry` (DynamoDB ×2, SQS, y `error_action` a CloudWatch Logs) | `names`, `units`, `lab_role_arn`, `telemetry_table_name`, `state_table_name` (de `module.data`), `queue_url`, `kms_key_arn` | `iot_endpoint`, `certificates`*, `private_keys`*, `certificate_arns`* |
 | `compute` | Subida del bundle de la API a S3, target group, ALB + listener HTTP:80, launch template (user data con `templatefile`, `tag_specifications`, `create_before_destroy`), ASG con `latest_version` y **sin `instance_refresh`** (denegado por el SCP), bastión opcional (`count`) | subredes, security groups, bucket de artifacts, `api_bundle_path`, nombres de tablas, `iot_endpoint`, `cors_origin`, `jwt_secret`*, `asg_*`, `tags` | `alb_dns_name`, `target_group_arn`, `launch_template_id`, `bastion_instance_id` |
-| `lambda-function` | Una Lambda (ZIP, `LabRole`, fuera de la VPC) y su log group `/aws/lambda/<nombre>` (retención 14 días). La raíz lo instancia con `for_each` sobre `local.lambdas`: `telemetry-export` (timeout 300 s, 512 MB), `alert-processor` (timeout 30 s, 256 MB) y `no-signal-monitor` (timeout 60 s, 256 MB) | `function_name`, `zip_path`, `handler` (default `index.handler`), `runtime` (default `nodejs22.x`), `timeout`, `memory_size`, `environment`, `lab_role_arn`, `log_retention_days` | `function_name`, `arn`, `log_group_name` |
+| `lambda-function` | Una Lambda (ZIP, `LabRole`, fuera de la VPC) y su log group `/aws/lambda/<nombre>` (retención 14 días). La raíz lo instancia con `for_each` sobre `local.lambdas`: `telemetry-export` (timeout 300 s, 512 MB), `alert-processor` (timeout 30 s, 256 MB) y `no-signal-monitor` (timeout 60 s, 256 MB) | `function_name`, `zip_path`, `handler` (default `index.handler`), `runtime` (default `nodejs22.x`), `timeout`, `memory_size`, `environment`, `lab_role_arn`, `kms_key_arn`, `log_retention_days` | `function_name`, `arn`, `log_group_name` |
 
 \* sensibles.
 
@@ -1161,6 +1195,10 @@ defensa.
 - **HTTP de punta a punta.** Sin dominio no hay certificado público de ACM. El
   listener del ALB y el sitio de S3 son HTTP; en producción serían HTTPS (ACM +
   CloudFront).
+- **Sin VPC flow logs.** Mandarlos a CloudWatch Logs necesita un rol IAM
+  propio (el Lab no deja crearlos) y mandarlos a S3, un bucket administrado por
+  Terraform (imposible por el SCP, sección 5). tfsec lo marca y queda ignorado
+  con ese motivo en `modules/network/main.tf`.
 - **Un solo NAT Gateway (zonal).** Si cae `us-east-1a`, las instancias privadas
   pierden salida a Internet hasta que vuelva. Un segundo NAT en `us-east-1b`
   costaría unos USD 32/mes más.

@@ -18,6 +18,10 @@ variable "state_table_name" {
   type        = string
   description = "DynamoDB table holding the last reading per unit (second dynamodbv2 action)."
 }
+variable "kms_key_arn" {
+  type        = string
+  description = "Customer-managed key encrypting the rule error log group."
+}
 variable "queue_url" {
   type        = string
   description = "URL of the readings queue the rule publishes to, consumed by the alert-processor."

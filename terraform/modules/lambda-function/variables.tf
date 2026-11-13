@@ -33,6 +33,10 @@ variable "lab_role_arn" {
   type        = string
   description = "Execution role ARN (Learner Lab LabRole)."
 }
+variable "kms_key_arn" {
+  type        = string
+  description = "Customer-managed key encrypting the function log group."
+}
 variable "log_retention_days" {
   type        = number
   description = "CloudWatch Logs retention for the function log group."

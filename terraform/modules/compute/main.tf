@@ -32,13 +32,22 @@ resource "aws_lb_target_group" "app" {
     port     = "3000"
   }
 }
+# Internet-facing on purpose: this is the public entry point of the API. The
+# listener below is plain HTTP for the same reason it has always been: the
+# Learner Lab gives us no domain and no ACM certificate to terminate TLS on,
+# and ACM will not issue one for the *.elb.amazonaws.com name of the balancer.
+#tfsec:ignore:aws-elb-alb-not-public
+#tfsec:ignore:AVD-AWS-0053
 resource "aws_lb" "app" {
-  name               = "snowball-alb"
-  load_balancer_type = "application"
-  internal           = false
-  security_groups    = [var.alb_security_group_id]
-  subnets            = var.public_subnet_ids
+  name                       = "snowball-alb"
+  load_balancer_type         = "application"
+  internal                   = false
+  security_groups            = [var.alb_security_group_id]
+  subnets                    = var.public_subnet_ids
+  drop_invalid_header_fields = true
 }
+#tfsec:ignore:aws-elb-http-not-used
+#tfsec:ignore:AVD-AWS-0054
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.app.arn
   port              = 80
@@ -56,6 +65,13 @@ resource "aws_launch_template" "app" {
   vpc_security_group_ids = [var.app_security_group_id]
   iam_instance_profile {
     name = var.lab_instance_profile
+  }
+  # IMDSv2 only. One hop is enough: the API runs on the instance itself, so
+  # nothing nested has to reach the credentials endpoint.
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
   }
   # api_bundle_md5 is rendered as a comment so a new bundle creates a new launch
   # template version, which triggers the ASG instance refresh.
@@ -115,5 +131,9 @@ resource "aws_instance" "bastion" {
   subnet_id                   = var.public_subnet_ids[0]
   vpc_security_group_ids      = [var.bastion_security_group_id]
   associate_public_ip_address = true
-  tags                        = { Name = "snowball-bastion" }
+  metadata_options {
+    http_endpoint = "enabled"
+    http_tokens   = "required"
+  }
+  tags = { Name = "snowball-bastion" }
 }
