@@ -1,0 +1,12 @@
+{
+  "name": "@snowball/auth-callback",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/handler.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "bundle": "esbuild src/handler.ts --bundle --platform=node --target=node22 --outfile=dist/lambda/index.js",
+    "zip": "cd dist/lambda && (zip -j ../auth-callback.zip index.js || python -m zipfile -c ../auth-callback.zip index.js)"
+  }
+}

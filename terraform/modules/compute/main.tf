@@ -79,7 +79,8 @@ resource "aws_launch_template" "app" {
     region          = data.aws_region.current.region
     artifact_bucket = var.artifact_bucket
     api_bundle_md5  = filemd5(var.api_bundle_path)
-    jwt_secret      = var.jwt_secret
+    user_pool_id    = var.cognito_user_pool_id
+    client_id       = var.cognito_client_id
     cors_origin     = var.cors_origin
     telemetry_table = var.table_names.telemetry
     state_table     = var.table_names.state

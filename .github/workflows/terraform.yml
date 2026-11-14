@@ -49,7 +49,8 @@ env:
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
   # Variables de Terraform: nada hardcodeado, nada de terraform.tfvars en el repo
-  TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+  # Contraseña de las cuentas demo de Cognito (operator/supervisor/admin @snowball.example)
+  TF_VAR_demo_user_password: ${{ secrets.DEMO_USER_PASSWORD }}
   TF_VAR_bucket_suffix: ${{ vars.BUCKET_SUFFIX }}
   # Ya no es variable de Terraform (Terraform ignora los TF_VAR_* no declarados): lo usan scripts/bootstrap-buckets.sh y `terraform init -backend-config`.
   TF_VAR_state_bucket_name: ${{ vars.STATE_BUCKET_NAME }}
@@ -177,7 +178,8 @@ jobs:
           BUCKET="$(terraform -chdir=terraform output -raw dashboard_bucket)"
           # Vacío cuando la réplica está apagada: por eso el if y no un sync fijo.
           REPLICA_BUCKET="$(terraform -chdir=terraform output -raw dashboard_replica_bucket)"
-          VITE_API_BASE="http://${ALB}" npm run build -w @snowball/dashboard
+          # Login con Cognito: Hosted UI, client id y el puente HTTPS de API Gateway.
+          VITE_API_BASE="http://${ALB}"           VITE_COGNITO_DOMAIN="$(terraform -chdir=terraform output -raw cognito_domain_url)"           VITE_COGNITO_CLIENT_ID="$(terraform -chdir=terraform output -raw cognito_client_id)"           VITE_AUTH_API="$(terraform -chdir=terraform output -raw auth_api_url)"             npm run build -w @snowball/dashboard
           aws s3 sync packages/dashboard/dist/ "s3://${BUCKET}/" --delete --region "${AWS_REGION}"
           if [ -n "${REPLICA_BUCKET}" ]; then
             aws s3 sync packages/dashboard/dist/ "s3://${REPLICA_BUCKET}/" --delete \
@@ -192,6 +194,8 @@ jobs:
               echo "- Dashboard réplica (${DASHBOARD_REPLICA_REGION}): $(terraform -chdir=terraform output -raw dashboard_replica_url)"
             fi
             echo "- IoT endpoint: $(terraform -chdir=terraform output -raw iot_endpoint)"
+            echo "- Cognito Hosted UI: $(terraform -chdir=terraform output -raw cognito_domain_url)"
+            echo "- Login: cuentas demo *@snowball.example con la contraseña del secret DEMO_USER_PASSWORD"
             echo ""
             if [ -n "${REPLICA_BUCKET}" ]; then
               echo "Las dos URLs sirven el mismo build y consultan el mismo ALB de ${AWS_REGION}:"

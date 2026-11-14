@@ -1,5 +1,5 @@
 /**
- * People-auth vocabulary shared by the API (issuer/verifier) and the
+ * Role vocabulary shared by the API (authorizer) and the
  * dashboard (types only — the dashboard keeps its own runtime copy, see
  * packages/dashboard/src/auth.ts).
  */
@@ -17,23 +17,4 @@ export function isRole(value: unknown): value is Role {
 /** `min` and every role above it pass. */
 export function hasRole(role: Role, min: Role): boolean {
   return ROLE_RANK[role] >= ROLE_RANK[min];
-}
-
-/** What the dashboard receives at login and what /auth/me returns. */
-export interface AuthUser {
-  id: number;
-  email: string;
-  role: Role;
-  /** null only for admin */
-  client_id: number | null;
-}
-
-/** JWT payload. `sub` is the user id as a string (JWT convention). */
-export interface AuthClaims {
-  sub: string;
-  email: string;
-  role: Role;
-  client_id: number | null;
-  iat: number;
-  exp: number;
 }

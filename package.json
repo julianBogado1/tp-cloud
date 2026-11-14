@@ -2,18 +2,18 @@
   "name": "tp-cloud",
   "private": true,
   "version": "0.1.0",
-  "description": "Snowball — plataforma de monitoreo de cadena de frío (ITBA Cloud, Entrega 2)",
+  "description": "Snowball — plataforma de monitoreo de cadena de frío (ITBA Cloud)",
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @snowball/shared && npm run build -w @snowball/alert-processor && npm run build -w @snowball/simulator && npm run build -w @snowball/api && npm run build -w @snowball/telemetry-export && npm run build -w @snowball/dashboard",
+    "build": "npm run build -w @snowball/shared && npm run build -w @snowball/alert-processor && npm run build -w @snowball/simulator && npm run build -w @snowball/api && npm run build -w @snowball/telemetry-export && npm run build -w @snowball/auth-callback && npm run build -w @snowball/dashboard",
     "test": "npm run test --workspaces --if-present",
     "simulator": "npm run dev -w @snowball/simulator --",
     "alert-processor": "npm run dev -w @snowball/alert-processor",
     "api": "npm run dev -w @snowball/api",
     "dashboard": "npm run dev -w @snowball/dashboard --",
-    "bundle": "npm run build -w @snowball/shared && npm run bundle -w @snowball/alert-processor && npm run zip -w @snowball/alert-processor && npm run bundle:no-signal -w @snowball/alert-processor && npm run zip:no-signal -w @snowball/alert-processor && npm run bundle -w @snowball/api && npm run bundle -w @snowball/telemetry-export && npm run zip -w @snowball/telemetry-export",
+    "bundle": "npm run build -w @snowball/shared && npm run bundle -w @snowball/alert-processor && npm run zip -w @snowball/alert-processor && npm run bundle:no-signal -w @snowball/alert-processor && npm run zip:no-signal -w @snowball/alert-processor && npm run bundle -w @snowball/api && npm run bundle -w @snowball/telemetry-export && npm run zip -w @snowball/telemetry-export && npm run bundle -w @snowball/auth-callback && npm run zip -w @snowball/auth-callback",
     "export": "npm run dev -w @snowball/telemetry-export --"
   },
   "devDependencies": {

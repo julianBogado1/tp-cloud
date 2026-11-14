@@ -31,7 +31,7 @@ runs:
       run: |
         missing=()
         for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
-                 TF_VAR_jwt_secret TF_VAR_bucket_suffix TF_VAR_state_bucket_name \
+                 TF_VAR_demo_user_password TF_VAR_bucket_suffix TF_VAR_state_bucket_name \
                  TF_VAR_key_name TF_VAR_bastion_allowed_cidr TF_VAR_sns_subscription_email; do
           [ -n "${!v}" ] || missing+=("$v")
         done
@@ -71,7 +71,7 @@ runs:
         node-version: 22
         cache: npm
 
-    - name: Compilar bundles (API, alert-processor, Lambda)
+    - name: Compilar bundles (API y Lambdas)
       if: steps.gate.outputs.ready == 'true'
       shell: bash
       run: |

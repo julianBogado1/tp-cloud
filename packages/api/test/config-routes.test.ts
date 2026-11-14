@@ -1,15 +1,14 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createServer, type Server } from 'http';
 import express from 'express';
-import { signToken } from '../src/auth/jwt';
 import { authenticate } from '../src/auth/middleware';
 import { createConfigRouter } from '../src/config-routes';
 import { createRouter } from '../src/routes';
 import type { ShadowClient } from '../src/shadow';
-import { configs, fakeData, secret } from './fixtures';
+import { configs, fakeData, resolveAuth, signToken } from './fixtures';
 
-const supervisor1 = signToken({ id: 2, email: 'sup@x', role: 'supervisor', client_id: 1 }, secret);
-const operator1 = signToken({ id: 1, email: 'op@x', role: 'operator', client_id: 1 }, secret);
+const supervisor1 = signToken({ id: 2, email: 'sup@x', role: 'supervisor', client_id: 1 });
+const operator1 = signToken({ id: 1, email: 'op@x', role: 'operator', client_id: 1 });
 
 const shadow: ShadowClient & { updateDesired: ReturnType<typeof vi.fn> } = {
   get: async (thing) => (thing === 'SB-001' ? { desired: { setpoint_c: -20 }, reported: { setpoint_c: -18 } } : undefined),
@@ -21,7 +20,7 @@ let base: string;
 
 function mount(app: express.Express, shadowClient: ShadowClient | undefined) {
   app.use(express.json());
-  app.use('/api', authenticate(secret));
+  app.use('/api', authenticate(resolveAuth));
   app.use('/api', createRouter(fakeData));
   app.use('/api', createConfigRouter(fakeData, shadowClient));
 }

@@ -6,7 +6,8 @@ install -d /opt/snowball
 aws s3 cp "s3://${artifact_bucket}/api.bundle.js" /opt/snowball/api.bundle.js
 cat >/etc/snowball.env <<'ENV'
 AWS_REGION=${region}
-JWT_SECRET=${jwt_secret}
+COGNITO_USER_POOL_ID=${user_pool_id}
+COGNITO_CLIENT_ID=${client_id}
 CORS_ORIGIN=${cors_origin}
 IOT_ENDPOINT=${iot_endpoint}
 DDB_TABLE=${telemetry_table}

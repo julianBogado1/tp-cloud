@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { IngestedReading, ThresholdConfig } from '@snowball/shared';
-import { ackAlert, connectLive, fetchAlerts, fetchTelemetry, fetchUnits, setUnauthorizedHandler, type AlertRow, type UnitWithReading } from './api';
+import { ackAlert, ApiError, connectLive, fetchAlerts, fetchMe, fetchTelemetry, fetchUnits, setUnauthorizedHandler, type AlertRow, type UnitWithReading } from './api';
 import { canAck, canConfig, clearSession, getSession, isAdmin, setSession, type Session } from './auth';
 import { AlertsTable } from './AlertsTable';
+import { COGNITO, consumeLoginRedirect, logoutUrl } from './cognito';
 import { ConfigPanel } from './ConfigPanel';
 import { Login } from './Login';
 import { Sparkline } from './Sparkline';
@@ -13,31 +14,57 @@ import { UsersPanel } from './UsersPanel';
 const HISTORY_POINTS = 60;
 const ALERTS_REFRESH_MS = 30_000;
 
-/** Session gate: no valid token → login page; otherwise the dashboard. */
+/**
+ * Session gate: no valid token → login page (Cognito Hosted UI); coming back
+ * from the login redirect → resolve the user with /auth/me; otherwise the
+ * dashboard.
+ */
 export function App() {
   const [session, setSessionState] = useState<Session | null>(() => getSession());
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [completing, setCompleting] = useState(() => consumeLoginRedirect().kind === 'tokens');
 
   useEffect(() => {
     // A 401 from any call (or a 4401 WebSocket close) lands here.
     setUnauthorizedHandler(() => setSessionState(null));
   }, []);
 
-  if (!session) {
-    return (
-      <Login
-        onLogin={(s) => {
-          setSession(s);
-          setSessionState(s);
-        }}
-      />
+  useEffect(() => {
+    const redirect = consumeLoginRedirect();
+    if (redirect.kind === 'error') setLoginError(redirect.code);
+    if (redirect.kind !== 'tokens') return;
+    let cancelled = false;
+    fetchMe(redirect.accessToken).then(
+      (user) => {
+        if (cancelled) return;
+        const s = { token: redirect.accessToken, user };
+        setSession(s);
+        setSessionState(s);
+        setCompleting(false);
+      },
+      (err: unknown) => {
+        if (cancelled) return;
+        // 401: valid Cognito user without an active snowball-users row.
+        setLoginError(err instanceof ApiError && err.status === 401 ? 'no_access' : 'generic');
+        setCompleting(false);
+      },
     );
-  }
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (completing) return <main className="app"><p className="empty">Iniciando sesión…</p></main>;
+  if (!session) return <Login error={loginError} />;
   return (
     <Dashboard
       session={session}
       onLogout={() => {
         clearSession();
-        setSessionState(null);
+        // Also end the Hosted UI session, or the next "Ingresar" logs the same
+        // user back in without asking. Cognito returns through the bridge's /logout.
+        if (COGNITO) window.location.assign(logoutUrl(COGNITO));
+        else setSessionState(null);
       }}
     />
   );

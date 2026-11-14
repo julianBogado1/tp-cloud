@@ -82,7 +82,7 @@ export function UsersPanel({ selfId }: { selfId: number }) {
       <form className="form" onSubmit={submit}>
         <h3>Nuevo usuario</h3>
         <label>Email<input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required /></label>
-        <label>Contraseña<input type="password" minLength={8} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required /></label>
+        <label title="Contraseña de Cognito: 8 caracteres o más, con una minúscula y un número">Contraseña inicial<input type="password" minLength={8} pattern="(?=.*[a-z])(?=.*[0-9]).{8,}" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required /></label>
         <label>
           Rol
           <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as Role })}>
