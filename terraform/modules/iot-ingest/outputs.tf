@@ -13,3 +13,7 @@ output "certificate_arns" {
   value     = { for unit, cert in aws_iot_certificate.this : unit => cert.arn }
   sensitive = true
 }
+output "errors_log_group_name" {
+  description = "Log group where the topic rule writes failed actions."
+  value       = aws_cloudwatch_log_group.errors.name
+}
