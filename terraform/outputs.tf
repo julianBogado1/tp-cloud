@@ -105,3 +105,11 @@ output "auth_api_url" {
   description = "HTTPS bridge for the login redirect (VITE_AUTH_API): /callback and /logout."
   value       = aws_apigatewayv2_api.auth.api_endpoint
 }
+output "ops_topic_arn" {
+  description = "SNS topic for infrastructure alarms (confirm the email subscription once)."
+  value       = aws_sns_topic.ops.arn
+}
+output "ops_dashboard_name" {
+  description = "CloudWatch dashboard with the whole pipeline."
+  value       = aws_cloudwatch_dashboard.ops.dashboard_name
+}
