@@ -236,10 +236,12 @@ button (times in the console are UTC).
 
 **Dead-letter queue (about 2–3 minutes)** fires `snowball-ops-dlq-not-empty`.
 The message is put straight into the DLQ, as if a reading had failed 5 times.
+The queue URL comes from the Terraform output because it carries the account
+ID, which is different for every Learner Lab account.
 
 ```bash
 aws sqs send-message --region us-east-1 \
-  --queue-url https://sqs.us-east-1.amazonaws.com/345997015683/snowball-readings-dlq \
+  --queue-url "$(terraform -chdir=terraform output -raw dlq_url)" \
   --message-body '{"test":"simulated failure"}'
 ```
 
@@ -248,7 +250,7 @@ purging twice within 60 seconds fails, which is normal):
 
 ```bash
 aws sqs purge-queue --region us-east-1 \
-  --queue-url https://sqs.us-east-1.amazonaws.com/345997015683/snowball-readings-dlq
+  --queue-url "$(terraform -chdir=terraform output -raw dlq_url)"
 ```
 
 **Processing backlog (about 5 minutes)** fires `snowball-ops-queue-backlog`.
